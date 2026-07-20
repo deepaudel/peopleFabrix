@@ -2,6 +2,7 @@ const form = document.getElementById("ask-form");
 const input = document.getElementById("question-input");
 const button = document.getElementById("ask-button");
 const transcript = document.getElementById("transcript");
+const starters = document.getElementById("starters");
 
 let hasEntries = false;
 
@@ -10,6 +11,32 @@ function clearPlaceholder() {
     transcript.innerHTML = "";
     hasEntries = true;
   }
+}
+
+function escapeHtml(str) {
+  const div = document.createElement("div");
+  div.textContent = str;
+  return div.innerHTML;
+}
+
+function linkify(text) {
+  let html = escapeHtml(text);
+
+  // Markdown-style links: [title](url)
+  html = html.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, (_match, title, url) => {
+    return `<a href="${url}" target="_blank" rel="noopener noreferrer">${title}</a>`;
+  });
+
+  // Any remaining bare URLs (not already inside an href="...") get linkified too
+  html = html.replace(/(?<!href=")(https?:\/\/[^\s)<]+)/g, (url) => {
+    return `<a href="${url}" target="_blank" rel="noopener noreferrer">${url}</a>`;
+  });
+
+  return html;
+}
+
+function renderAnswer(entry, text) {
+  entry.querySelector("span").innerHTML = linkify(text);
 }
 
 function addEntry(role, text, isError = false) {
@@ -23,6 +50,15 @@ function addEntry(role, text, isError = false) {
   transcript.scrollTop = transcript.scrollHeight;
   return entry;
 }
+
+starters.addEventListener("click", (event) => {
+  const chip = event.target.closest(".starter-chip");
+  if (!chip) {
+    return;
+  }
+  input.value = chip.textContent;
+  form.requestSubmit();
+});
 
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -53,7 +89,7 @@ form.addEventListener("submit", async (event) => {
       return;
     }
 
-    pending.querySelector("span").textContent = data.answer;
+    renderAnswer(pending, data.answer);
   } catch (err) {
     pending.classList.add("error-text");
     pending.querySelector("span").textContent = String(err);

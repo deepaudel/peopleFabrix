@@ -72,6 +72,31 @@ body {
   letter-spacing: 0.04em;
 }
 
+.starters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 0.9rem;
+}
+
+.starter-chip {
+  align-self: auto;
+  font: inherit;
+  font-size: 0.85rem;
+  padding: 0.45rem 0.9rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-page);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.starter-chip:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--bg-page);
+}
+
 #ask-form {
   display: flex;
   flex-direction: column;
@@ -135,6 +160,10 @@ button:disabled {
 
 .transcript-entry.assistant strong {
   color: var(--muted);
+}
+
+.transcript-entry a {
+  color: var(--accent);
 }
 
 .placeholder {
