@@ -1,9 +1,11 @@
+import os
+
 SEED_URLS = [
     "https://handbook.gitlab.com/handbook/people-group/",
     "https://handbook.gitlab.com/handbook/people-policies/",
 ]
 
-CHROMA_DIR = "data/chroma"
+CHROMA_DIR = os.environ.get("CHROMA_DIR", "data/chroma")
 COLLECTION_NAME = "gitlab_handbook"
 
 EMBEDDING_MODEL = "text-embedding-3-small"
