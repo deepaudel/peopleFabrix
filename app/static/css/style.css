@@ -1,0 +1,146 @@
+:root {
+  color-scheme: light dark;
+  --border: #d8d8d8;
+  --bg-panel: #ffffff;
+  --bg-page: #f4f5f7;
+  --text: #1a1a1a;
+  --muted: #6b7280;
+  --accent: #2563eb;
+  --accent-hover: #1d4ed8;
+  --error: #b91c1c;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --border: #3a3a3a;
+    --bg-panel: #1e1f22;
+    --bg-page: #121214;
+    --text: #e8e8e8;
+    --muted: #9aa0a6;
+    --accent: #3b82f6;
+    --accent-hover: #60a5fa;
+    --error: #f87171;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  background: var(--bg-page);
+  color: var(--text);
+}
+
+.app-header {
+  padding: 1.5rem 2rem 0.5rem;
+}
+
+.app-header h1 {
+  margin: 0 0 0.25rem;
+}
+
+.app-header p {
+  margin: 0;
+  color: var(--muted);
+}
+
+.panels {
+  display: flex;
+  gap: 1.5rem;
+  padding: 1.5rem 2rem 2rem;
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+
+.panel {
+  flex: 1 1 320px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 1.25rem;
+  min-height: 260px;
+}
+
+.panel h2 {
+  margin-top: 0;
+  font-size: 1rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+#ask-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+textarea {
+  width: 100%;
+  resize: vertical;
+  font: inherit;
+  padding: 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-page);
+  color: var(--text);
+}
+
+button {
+  align-self: flex-start;
+  font: inherit;
+  padding: 0.6rem 1.4rem;
+  border: none;
+  border-radius: 8px;
+  background: var(--accent);
+  color: #fff;
+  cursor: pointer;
+}
+
+button:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.transcript {
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+  max-height: 420px;
+  overflow-y: auto;
+}
+
+.transcript-entry {
+  white-space: pre-wrap;
+  line-height: 1.5;
+  padding-bottom: 0.9rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.transcript-entry:last-child {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+.transcript-entry.user strong {
+  color: var(--accent);
+}
+
+.transcript-entry.assistant strong {
+  color: var(--muted);
+}
+
+.placeholder {
+  color: var(--muted);
+}
+
+.error-text {
+  color: var(--error);
+}

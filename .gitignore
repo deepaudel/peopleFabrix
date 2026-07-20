@@ -8,3 +8,12 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Local environment variables
+.env
+
+# Generated RAG index (rebuild via `uv run python -m app.rag.ingest`)
+data/chroma/
+
+# OS
+.DS_Store
