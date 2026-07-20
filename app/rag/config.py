@@ -3,6 +3,10 @@ import os
 SEED_URLS = [
     "https://handbook.gitlab.com/handbook/people-group/",
     "https://handbook.gitlab.com/handbook/people-policies/",
+    "https://handbook.gitlab.com/handbook/hiring/",
+    "https://handbook.gitlab.com/handbook/company/culture/inclusion/",
+    "https://handbook.gitlab.com/handbook/total-rewards/",
+    "https://handbook.gitlab.com/handbook/people-group/learning-and-development/",
 ]
 
 CHROMA_DIR = os.environ.get("CHROMA_DIR", "data/chroma")
