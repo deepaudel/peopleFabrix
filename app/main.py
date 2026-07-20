@@ -18,6 +18,7 @@ load_dotenv()
 APP_DIR = Path(__file__).parent
 DEFAULT_MODEL = "gpt-4o-mini"
 SESSION_COOKIE_NAME = "session_id"
+ASSET_VERSION = os.environ.get("RAILWAY_DEPLOYMENT_ID", "dev")
 
 SYSTEM_PROMPT = """You are an internal HR and workforce assistant for the company.
 Your role is to help employees and managers understand HR policies, benefits, workplace procedures, and workforce information using the company-provided context.
@@ -117,7 +118,7 @@ def build_user_content(question: str, chunks: list[dict]) -> str:
 @app.get("/", response_class=HTMLResponse)
 def read_root(request: Request):
     session_id, is_new = get_or_create_session_id(request)
-    response = templates.TemplateResponse(request, "index.html")
+    response = templates.TemplateResponse(request, "index.html", {"asset_version": ASSET_VERSION})
     if is_new:
         set_session_cookie(response, session_id)
     return response
