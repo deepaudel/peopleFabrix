@@ -47,6 +47,26 @@ body {
   color: var(--muted);
 }
 
+.demo-badge {
+  display: inline-block;
+  vertical-align: middle;
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 0.2rem 0.6rem;
+  border-radius: 999px;
+  background: #fef3c7;
+  color: #92400e;
+}
+
+@media (prefers-color-scheme: dark) {
+  .demo-badge {
+    background: #78350f;
+    color: #fde68a;
+  }
+}
+
 .panels {
   display: flex;
   gap: 1.5rem;
