@@ -5,13 +5,14 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal
 
-from anthropic import APIError
+from anthropic import APIError as AnthropicAPIError
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from pydantic import BaseModel
+from openai import APIError as OpenAIAPIError
+from pydantic import BaseModel, Field
 
 from app.mcp_client import MCPClientManager
 from app.orchestrator import answer_question, langfuse, resume_pending_action
@@ -27,6 +28,13 @@ DEMO_MODE = os.environ.get("DEMO_MODE", "false").lower() == "true"
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    missing = [k for k in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY") if not os.environ.get(k)]
+    if missing:
+        raise RuntimeError(
+            f"Server is not configured with: {', '.join(missing)}. "
+            "OPENAI_API_KEY powers the default chat model; ANTHROPIC_API_KEY is required "
+            "for the HRIS-write path (see CLAUDE.md)."
+        )
     mcp = MCPClientManager()
     await mcp.start()
     app.state.mcp = mcp
@@ -57,6 +65,11 @@ class AskRequest(BaseModel):
 class ConfirmActionRequest(BaseModel):
     pending_id: str
     decision: Literal["confirm", "cancel"]
+
+
+class FeedbackRequest(BaseModel):
+    trace_id: str = Field(pattern=r"^[0-9a-f]{32}$")
+    rating: Literal["up", "down"]
 
 
 def get_or_create_session_id(request: Request) -> tuple[str, bool]:
@@ -90,8 +103,8 @@ async def _sse_wrap(generator):
     try:
         async for item in generator:
             yield _sse_event(item)
-    except APIError as e:
-        yield _sse_event({"kind": "error", "error": f"Anthropic API error: {e}"})
+    except (AnthropicAPIError, OpenAIAPIError) as e:
+        yield _sse_event({"kind": "error", "error": f"LLM API error: {e}"})
 
 
 def _sse_response(generator) -> StreamingResponse:
@@ -142,6 +155,8 @@ def health(request: Request):
     return {
         "status": "healthy",
         "mcp_tools": [t["name"] for t in mcp.claude_tool_defs],
+        "openai_configured": bool(os.environ.get("OPENAI_API_KEY")),
+        "anthropic_configured": bool(os.environ.get("ANTHROPIC_API_KEY")),
     }
 
 
@@ -163,21 +178,25 @@ async def ask(payload: AskRequest, request: Request):
             set_session_cookie(response, session_id)
         return response
 
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        response = JSONResponse(
-            status_code=500,
-            content={"error": "Server is not configured with an ANTHROPIC_API_KEY."},
-        )
-        if is_new:
-            set_session_cookie(response, session_id)
-        return response
-
     mcp: MCPClientManager = request.app.state.mcp
 
     response = _sse_response(answer_question(question, session_id, persona, mcp))
     if is_new:
         set_session_cookie(response, session_id)
     return response
+
+
+@app.post("/api/feedback")
+def submit_feedback(payload: FeedbackRequest, request: Request):
+    persona = resolve_persona(request)
+    langfuse.create_score(
+        trace_id=payload.trace_id,
+        name="user_feedback",
+        value=1.0 if payload.rating == "up" else 0.0,
+        data_type="BOOLEAN",
+        metadata={"persona_id": persona.id if persona else None},
+    )
+    return {"ok": True}
 
 
 @app.post("/api/confirm-action")

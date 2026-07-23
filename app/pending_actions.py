@@ -20,7 +20,15 @@ def _purge_expired() -> None:
         del _entries[pid]
 
 
-def stage(pending_id: str, session_id: str, persona_id: str, question: str, messages: list, model: str) -> None:
+def stage(
+    pending_id: str,
+    session_id: str,
+    persona_id: str,
+    question: str,
+    messages: list,
+    model: str,
+    provider: str,
+) -> None:
     _purge_expired()
     _entries[pending_id] = {
         "session_id": session_id,
@@ -28,6 +36,7 @@ def stage(pending_id: str, session_id: str, persona_id: str, question: str, mess
         "question": question,
         "messages": messages,
         "model": model,
+        "provider": provider,
         "created_at": time.time(),
     }
 

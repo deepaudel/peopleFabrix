@@ -1,11 +1,11 @@
 """MCP client: spawns the peopleFabrix MCP tool server once (as a subprocess,
 stdio transport) and keeps it alive for the life of the FastAPI process.
 
-Also builds the Claude-facing tool schema from the MCP server's tool list,
-stripping the internal ACTOR_PERSONA_PARAM so Claude never sees or sets it —
-the orchestrator injects it server-side on every dispatch (see
-app/orchestrator.py:dispatch_tool). This is the security boundary that stops
-Claude from spoofing a different persona's identity.
+Also builds the Claude- and OpenAI-facing tool schemas from the MCP server's
+tool list, stripping the internal ACTOR_PERSONA_PARAM so neither model ever
+sees or sets it — the orchestrator injects it server-side on every dispatch
+(see app/orchestrator.py:dispatch_tool). This is the security boundary that
+stops a model from spoofing a different persona's identity.
 """
 
 import json
@@ -21,14 +21,33 @@ from mcp.types import Tool
 ACTOR_PERSONA_PARAM = "actor_persona_id"
 
 
-def to_claude_schema(tool: Tool) -> dict:
+def _stripped_input_schema(tool: Tool) -> dict:
     schema = dict(tool.inputSchema)
     properties = dict(schema.get("properties", {}))
     properties.pop(ACTOR_PERSONA_PARAM, None)
     schema["properties"] = properties
     if "required" in schema:
         schema["required"] = [r for r in schema["required"] if r != ACTOR_PERSONA_PARAM]
-    return {"name": tool.name, "description": tool.description or "", "input_schema": schema}
+    return schema
+
+
+def to_claude_schema(tool: Tool) -> dict:
+    return {
+        "name": tool.name,
+        "description": tool.description or "",
+        "input_schema": _stripped_input_schema(tool),
+    }
+
+
+def to_openai_schema(tool: Tool) -> dict:
+    return {
+        "type": "function",
+        "function": {
+            "name": tool.name,
+            "description": tool.description or "",
+            "parameters": _stripped_input_schema(tool),
+        },
+    }
 
 
 def parse_mcp_result(result) -> Any:
@@ -59,6 +78,7 @@ class MCPClientManager:
     def __init__(self) -> None:
         self.session: ClientSession | None = None
         self.claude_tool_defs: list[dict] = []
+        self.openai_tool_defs: list[dict] = []
         self._stack: AsyncExitStack | None = None
 
     async def start(self) -> None:
@@ -73,6 +93,7 @@ class MCPClientManager:
         await self.session.initialize()
         tools = await self.session.list_tools()
         self.claude_tool_defs = [to_claude_schema(t) for t in tools.tools]
+        self.openai_tool_defs = [to_openai_schema(t) for t in tools.tools]
 
     async def stop(self) -> None:
         if self._stack is not None:

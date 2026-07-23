@@ -327,3 +327,28 @@ button:disabled {
 .pending-action-buttons .cancel-btn:hover:not(:disabled) {
   background: var(--bg-page);
 }
+
+.feedback-buttons {
+  display: flex;
+  gap: 0.4rem;
+  margin-top: 0.5rem;
+}
+
+.feedback-btn {
+  padding: 0.2rem 0.5rem;
+  font-size: 0.9rem;
+  line-height: 1.4;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+}
+
+.feedback-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.feedback-btn.selected {
+  border-color: var(--accent);
+  background: var(--bg-page);
+}

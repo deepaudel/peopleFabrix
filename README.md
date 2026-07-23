@@ -1,8 +1,8 @@
 # PeopleFabrix
 
 FastAPI web app, managed with [uv](https://docs.astral.sh/uv/). An internal HR/workforce
-assistant powered by Claude, with tool access (via MCP) to policy search, HR records, and
-workforce analytics.
+assistant powered by OpenAI (gpt-4o-mini, default) and Claude (reserved for the HRIS-write
+flow), with tool access (via MCP) to policy search, HR records, and workforce analytics.
 
 ## Setup
 
@@ -12,9 +12,10 @@ uv sync
 
 Copy `.env.example` to `.env` and set:
 
-- `ANTHROPIC_API_KEY` — required, powers the Claude orchestrator.
-- `OPENAI_API_KEY` — required, but only for RAG embeddings (`text-embedding-3-small`); no
-  longer used for chat.
+- `OPENAI_API_KEY` — required, powers the default chat model (`gpt-4o-mini`) for most traffic,
+  plus RAG embeddings (`text-embedding-3-small`).
+- `ANTHROPIC_API_KEY` — required, reserved for the HRIS-write flow only (see `CLAUDE.md`'s
+  "Model routing" section).
 - `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` / `LANGFUSE_HOST` — optional, enables tracing.
   The app runs fine without these (tracing just no-ops). If you get 401s from Langfuse, check
   you're using the right cloud region host (`https://cloud.langfuse.com` for EU,
@@ -42,9 +43,11 @@ discovered at startup, useful for confirming the tool server spawned correctly.
 
 ## Architecture at a glance
 
-- **Orchestrator** (`app/orchestrator.py`) — a manual Claude tool-use loop, not the SDK's Tool
+- **Orchestrator** (`app/orchestrator.py`) — a manual tool-use loop, not either SDK's Tool
   Runner, because the HRIS-write confirmation gate needs to inspect one specific tool result
-  mid-loop and short-circuit.
+  mid-loop and short-circuit. OpenAI (`gpt-4o-mini`) handles every turn by default for cost;
+  if a turn ever decides to call `hris_write`, it's restarted on Claude instead (see
+  `app/providers/`).
 - **Tools** are exposed via an MCP server (`app/mcp_server/`), spawned once as a subprocess at
   FastAPI startup and reused for the app's lifetime — not a Dockerfile concern, it runs inside
   the same image/venv.
@@ -52,6 +55,8 @@ discovered at startup, useful for confirming the tool server spawned correctly.
   point when real identity is available.
 - **HRIS/warehouse tools are mocks** with realistic per-persona data, not real vendor
   integrations — see `CLAUDE.md` for what a real integration would replace.
+- **Responses stream** over Server-Sent Events (`/api/ask`, `/api/confirm-action`) — live tool
+  "steps" plus token-by-token answer text, not a single buffered JSON reply.
 
 See `CLAUDE.md` for the full request-flow and architecture writeup.
 

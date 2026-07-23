@@ -4,11 +4,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-PeopleFabrix is a FastAPI web app: an internal HR/workforce assistant powered by a Claude
-agentic loop with tool access (via MCP) to policy search (RAG over the public GitLab handbook,
-used as a stand-in policy corpus), HR records, and workforce analytics. Identity is 4 hardcoded
-personas standing in for real SSO. Server-rendered Jinja2 + vanilla JS/CSS frontend — no build
-step, no SPA framework.
+PeopleFabrix is a FastAPI web app: an internal HR/workforce assistant powered by an agentic loop
+(OpenAI by default, Claude reserved for HRIS writes — see "Model routing" below) with tool
+access (via MCP) to policy search (RAG over the public GitLab handbook, used as a stand-in
+policy corpus), HR records, and workforce analytics. Identity is 4 hardcoded personas standing
+in for real SSO. Server-rendered Jinja2 + vanilla JS/CSS frontend — no build step, no SPA
+framework.
 
 ## Commands
 
@@ -22,7 +23,10 @@ uv run python -m app.rag.ingest            # (re)build the handbook search index
 
 There is no test suite and no lint/format tooling configured in this repo. Verification is
 manual: run the dev server, use `/health` to confirm the MCP tool server started, and exercise
-`/api/ask` via the browser or curl.
+`/api/ask` via the browser or curl. `/api/ask` and `/api/confirm-action` are SSE streams, not
+plain JSON — use `curl -N` (disables curl's own buffering) to watch `event:`/`data:` lines
+arrive incrementally instead of all at once at the end; this is also the fastest way to isolate
+an orchestrator/Langfuse bug from a frontend rendering bug when something looks broken.
 
 Local Docker sanity check before deploying:
 
@@ -37,20 +41,42 @@ docker run -e ANTHROPIC_API_KEY=<key> -e OPENAI_API_KEY=<key> -e PORT=8000 -p 80
 `session_id` cookie (conversation history scope) and `persona_id` cookie (identity, via
 `app.personas.resolve_persona`) — a request with no persona selected is rejected, the frontend
 only shows the ask form after a persona is picked, 2) calls `orchestrator.answer_question`,
-which runs a manual Claude tool-use loop (`_run_loop`): call Claude with the MCP-derived
-`tools=` list → if `stop_reason != "tool_use"`, that's the final answer → otherwise dispatch
-every `tool_use` block through the MCP client (injecting the caller's persona id server-side,
-see below), feed `tool_result`s back, repeat (capped at `MAX_TOOL_ITERATIONS`). The **clean**
+which runs a manual, provider-neutral tool-use loop (`_run_loop`): call the active model adapter
+with the MCP-derived tool defs → if `stop_reason != "tool_use"`, that's the final answer →
+otherwise dispatch every tool call through the MCP client (injecting the caller's persona id
+server-side, see below), feed the results back, repeat (capped at `MAX_TOOL_ITERATIONS`). Which
+provider is "active" can change mid-request — see "Model routing" below. The **clean**
 question/answer (not the raw tool-call transcript) is what gets stored in session history via
 `app/history.py`, same as before.
 
-**Why a manual loop, not the Anthropic SDK's Tool Runner:** the HRIS-write confirmation gate
-(see below) needs to inspect one specific tool's result mid-loop and short-circuit before
-feeding it back to Claude — a black-box tool-runner doesn't support that.
+**Why a manual loop, not a vendor SDK's Tool Runner:** the HRIS-write confirmation gate (see
+below) needs to inspect one specific tool's result mid-loop and short-circuit before feeding it
+back to the model — a black-box tool-runner doesn't support that.
 
-**Model routing (`orchestrator.choose_model`):** deterministic, not a classifier — defaults to
-Sonnet; only short greeting/acknowledgment turns (e.g. "hi", "thanks") route to Haiku. `tools=`
-stays attached either way, so a misclassified "hi, what's my PTO" can still trigger a tool call.
+**Model routing — OpenAI by default, Claude reserved for HRIS writes:** every new turn
+(`answer_question`) starts on OpenAI (`gpt-4o-mini`, `app/providers/openai_provider.py`) — this
+is the cost-saving default and covers greetings, policy questions, HRIS reads, and warehouse
+queries alike. `app/orchestrator.py:_run_loop` is written against a provider-neutral
+`ModelAdapter` interface (`app/providers/base.py`'s `TurnResult`/`ToolCallRequest`), so it never
+branches on which vendor is active except for one thing: if a turn's result includes a call to
+`hris_write` and the active adapter isn't Anthropic, `_run_loop` raises `_RedirectToClaude`
+*before* dispatching anything or mutating `messages`. `answer_question` catches this, discards
+the OpenAI attempt entirely (nothing was written to history or dispatched), and restarts the
+same turn from scratch on Claude (`claude-sonnet-5`, `app/providers/anthropic_provider.py`) with
+its own fresh `MAX_TOOL_ITERATIONS` budget. This reacts to the model's actual decision to write
+rather than guessing from question phrasing, so it can't be fooled by wording — at the cost of
+one cheap discarded `gpt-4o-mini` call on turns that end up needing a write. If a batch contains
+`hris_write` alongside other tool calls, the whole batch is discarded and redone on Claude, not
+just the write — this avoids ever mixing OpenAI-shaped (`role: "tool"`) and Anthropic-shaped
+(`tool_result` content blocks) messages in the same in-flight `messages` list, which the two
+SDKs can't interoperate on. `resume_pending_action` always resumes on Claude (asserted, not
+branched on) since a `pending_confirmation` can only be staged after this redirect has already
+happened — `entry["messages"]` is only ever valid to replay against the provider that produced
+it. `app/mcp_client.py` builds tool schemas for both providers (`claude_tool_defs`/
+`openai_tool_defs`) from the same MCP tool list. Note the OpenAI adapter uses raw
+`chat.completions.create(stream=True)` with manual chunk accumulation, not the SDK's higher-level
+`chat.completions.stream()` helper — that helper requires every tool's function schema to be
+marked `"strict": True`, which FastMCP's dynamically-generated schemas aren't.
 
 **MCP tool server (`app/mcp_server/`):** a `FastMCP` app exposing 4 tools — `policy_search`
 (thin wrapper around the existing `app/rag/retrieve.py:get_relevant_chunks`, reused verbatim),
@@ -64,12 +90,13 @@ looking ungrounded, check this first.
 
 **Identity boundary — `actor_persona_id`:** every tool that needs to know "who's asking" takes
 an `actor_persona_id` parameter (not `_persona_id` — FastMCP rejects leading-underscore
-parameter names). `app/mcp_client.py:to_claude_schema` strips this parameter from the schema
-Claude actually sees; `orchestrator.dispatch_tool` injects the real value server-side on every
-call. Claude can never see or set this — it cannot spoof a different persona's identity. Tools
-also accept a person's **name** for `target_persona_id` (resolved via
-`hris_store.resolve_persona_id`), not just the internal id — Claude only knows people by name
-from conversation context, and requiring an internal ID it doesn't have breaks lookups.
+parameter names). `app/mcp_client.py:to_claude_schema`/`to_openai_schema` both strip this
+parameter from the schema the model actually sees; `orchestrator.dispatch_tool` injects the real
+value server-side on every call, regardless of which provider is active. The model can never see
+or set this — it cannot spoof a different persona's identity. Tools also accept a person's
+**name** for `target_persona_id` (resolved via `hris_store.resolve_persona_id`), not just the
+internal id — the model only knows people by name from conversation context, and requiring an
+internal ID it doesn't have breaks lookups.
 
 **Personas (`app/personas.py`):** 4 hardcoded personas (2 employees, 1 manager, 1 HRBP),
 standing in for real SSO. All resolution funnels through `resolve_persona(request)`, called
@@ -87,30 +114,32 @@ HRBP → anyone. A real HRIS integration later replaces the bodies of
 `hris_write` is two-phase: `action="propose"` validates + stages the change and returns a
 `pending_id` + description, **without mutating anything**; `action="confirm"`/`"cancel"` (with
 that `pending_id`) actually applies or discards it. When `_run_loop` sees a `propose` result
-with `status: "pending_confirmation"`, it stages the in-progress Claude `messages` array in
-`app/pending_actions.py` (same in-memory, single-instance pattern as `history.py`) and returns
-`{"type": "pending_action", ...}` **instead of continuing the loop** — Claude physically cannot
-auto-confirm its own proposal in the same turn, regardless of what the system prompt says.
-The frontend renders a distinct `.pending-action` card (Confirm/Cancel), and `POST
+with `status: "pending_confirmation"`, it stages the in-progress `messages` array (always
+Claude-shaped — see "Model routing" above) in `app/pending_actions.py` (same in-memory,
+single-instance pattern as `history.py`, now also recording `provider` alongside `model`) and
+returns `{"type": "pending_action", ...}` **instead of continuing the loop** — the model
+physically cannot auto-confirm its own proposal in the same turn, regardless of what the system
+prompt says. The frontend renders a distinct `.pending-action` card (Confirm/Cancel), and `POST
 /api/confirm-action` → `orchestrator.resume_pending_action` pops the staged entry, dispatches
 the real `confirm`/`cancel` to MCP, appends the outcome as a plain-text note (not a synthetic
-tool_result — simpler and avoids Claude API constraints around unmatched tool_use/tool_result
-pairs), and resumes the same `_run_loop` to get Claude's natural-language confirmation.
+tool_result — simpler and avoids Anthropic API constraints around unmatched tool_use/tool_result
+pairs), and resumes the same `_run_loop` (always on Claude — asserted in code, not branched on)
+to get its natural-language confirmation.
 
 **Live step + token streaming ("agent transparency"), over SSE:** `_run_loop`,
 `answer_question`, and `resume_pending_action` are `async def` **generators**, not
 `return`-once coroutines — `main.py`'s `/api/ask` and `/api/confirm-action` wrap them in a
 `StreamingResponse` (`text/event-stream`), forwarding each yielded `{"kind": ...}` dict as one
 SSE message (`event: {kind}\ndata: {json}\n\n`). Event kinds: `step` (before each tool
-dispatch), `answer_reset` (before every Claude generation's text starts — needed because a
-generation that ends in `stop_reason=="tool_use"` may have produced throwaway preamble text
-that must not persist once the next generation's deltas arrive), `answer_delta` (one per text
-token, via `client.messages.stream(...)` + `stream.text_stream`, **not** `messages.create`),
-and exactly one terminal `result` (or `error`) per request — same payload shape as the old
-buffered JSON response, wrapped via the `_result()` helper so every yield carries a `kind` key.
-`dispatch_tool` and `get_final_message()` are otherwise unchanged from the pre-streaming version
-— `stream.text_stream` already filters out tool-input JSON deltas, and `get_final_message()`
-returns the same `Message` shape `_run_loop` always used for `stop_reason`/tool_use detection.
+dispatch), `answer_reset` (before every generation's text starts, from either provider — needed
+because a generation that ends in `stop_reason=="tool_use"` may have produced throwaway preamble
+text that must not persist once the next generation's deltas arrive; also fired when a turn
+restarts on Claude after the HRIS-write redirect, to clear the discarded OpenAI attempt's
+preamble), `answer_delta` (one per text token — each provider adapter's `stream_turn()` yields
+these as it streams; see `app/providers/`), and exactly one terminal `result` (or `error`) per
+request — same payload shape as the old buffered JSON response, wrapped via the `_result()`
+helper so every yield carries a `kind` key. `dispatch_tool` is otherwise unchanged from the
+pre-streaming version.
 
 `@observe` (Langfuse) **does** support decorating an async-generator function — confirmed by
 reading the installed SDK: it dispatches via `inspect.isasyncgen`, not the coroutine path, into
@@ -143,8 +172,12 @@ denied if they request a `department_filter` for a different one; HRBPs have ful
 **Langfuse tracing (`app/orchestrator.py`):** `@observe(name="ask")` on `answer_question` (and
 `@observe(name="confirm-action")` on `resume_pending_action`) creates the root trace;
 `propagate_attributes(user_id=persona.id, session_id=..., metadata={"persona_role": ...})`
-right after attaches identity to every nested span. Each Claude call and each MCP tool dispatch
-gets its own `start_as_current_observation` (as_type `"generation"`/`"tool"`). Uses the
+right after attaches identity to every nested span. Each model call and each MCP tool dispatch
+gets its own `start_as_current_observation` (as_type `"generation"`/`"tool"`) — the generation
+span is named `f"{adapter.provider}:{model}"` (e.g. `"openai:gpt-4o-mini"`,
+`"anthropic:claude-sonnet-5"`), which is also the easiest way to see the actual OpenAI/Claude
+cost split in the Langfuse dashboard (Langfuse auto-calculates `totalCost` for both, verified
+against live traces — no per-provider cost wiring needed). Uses the
 **v4 SDK API** (`get_client()`, `propagate_attributes`, `start_as_current_observation` — not the
 v3 names like `start_as_current_span`/`update_current_trace`, which don't exist in the installed
 version). Gracefully no-ops if `LANGFUSE_PUBLIC_KEY` isn't set — doesn't crash the app. **Note:**
@@ -154,6 +187,20 @@ mismatch, not invalid keys. Also note `get_client()` runs at import time in `orc
 which is why that module calls `load_dotenv()` itself rather than relying on `main.py`'s call —
 `main.py`'s imports (which trigger `orchestrator`'s module-level code) resolve before its own
 `load_dotenv()` line runs.
+
+**User feedback → Langfuse scores:** `orchestrator._result()` attaches
+`langfuse.get_current_trace_id()` to every terminal SSE `result` payload (works because it's
+always called from inside the `@observe`-decorated root span of `answer_question`/
+`resume_pending_action`; returns `None` if Langfuse isn't configured, which the frontend treats
+as "don't render feedback buttons"). The frontend (`renderAnswer` in `chat.js`) renders 👍/👎
+buttons under a rendered answer (not under a `pending_action` card) whenever a `trace_id` is
+present; clicking one `POST`s `{trace_id, rating}` to `/api/feedback`, which calls
+`langfuse.create_score(trace_id=..., name="user_feedback", data_type="BOOLEAN", value=1.0|0.0)`
+— synchronous and non-blocking (enqueues to a background thread, no per-request `flush()`
+needed), and silently no-ops under the same "Langfuse not configured" condition as everything
+else here. Unlike `pending_actions.pop`, this endpoint doesn't check score ownership against
+session/persona — a feedback score is a side-channel annotation, not a state mutation, and trace
+IDs are 128-bit random hex never exposed anywhere another session could scrape them from.
 
 **RAG pipeline (`app/rag/`)** — unchanged from before the Claude/MCP pivot, now called from the
 `policy_search` MCP tool instead of directly from `main.py`:
@@ -167,8 +214,9 @@ which is why that module calls `load_dotenv()` itself rather than relying on `ma
   for a small, infrequently-updated corpus).
 - `retrieve.py` — `get_relevant_chunks(question)`: embeds the question, queries Chroma for the
   nearest chunks, returns `[]` gracefully if the index doesn't exist yet or `OPENAI_API_KEY` is
-  unset. `OPENAI_API_KEY` stays required for this even though Claude is now the chat model —
-  Anthropic has no embeddings endpoint.
+  unset. `OPENAI_API_KEY` is required for this regardless of chat routing — Anthropic has no
+  embeddings endpoint, so even on turns that redirect to Claude, retrieval still goes through
+  OpenAI.
 
 **Frontend (`app/templates/index.html`, `app/static/`):** navy (`#0f172a`) header bar with the
 PeopleFabrix logo (`app/static/img/logo.png`), matching the marketing site's design —
@@ -188,9 +236,10 @@ seem stale after a deploy, this is the mechanism to check, not just browser cach
 ## Deployment (Railway)
 
 Stateful app (local Chroma index + in-memory session/persona/pending-action state) — **must**
-run as a single instance with a persistent volume, `CHROMA_DIR` pointed at that volume, and
-`ANTHROPIC_API_KEY` + `OPENAI_API_KEY` set (the latter for embeddings only). Full steps are in
-`README.md`. After the first deploy (or whenever handbook content should refresh), ingestion is
+run as a single instance with a persistent volume, `CHROMA_DIR` pointed at that volume, and both
+`OPENAI_API_KEY` (default chat model + embeddings) and `ANTHROPIC_API_KEY` (HRIS-write path
+only) set — both are hard startup requirements even though most traffic only needs one of them,
+since any request could redirect mid-loop. Full steps are in `README.md`. After the first deploy (or whenever handbook content should refresh), ingestion is
 run against the deployed environment specifically over SSH into the running container
 (`railway ssh -- uv run python -m app.rag.ingest`) — `railway run` only executes locally with
 Railway's env vars injected, it does *not* reach the deployed volume. The MCP subprocess is

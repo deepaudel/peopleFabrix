@@ -82,9 +82,44 @@ function linkify(text) {
   return html;
 }
 
-function renderAnswer(entry, text) {
+function renderFeedback(container, traceId) {
+  const div = document.createElement("div");
+  div.className = "feedback-buttons";
+  div.innerHTML = `
+    <button type="button" class="feedback-btn feedback-up" title="Good response" aria-label="Thumbs up">👍</button>
+    <button type="button" class="feedback-btn feedback-down" title="Bad response" aria-label="Thumbs down">👎</button>
+  `;
+
+  const send = async (rating, btn) => {
+    div.querySelectorAll("button").forEach((b) => (b.disabled = true));
+    try {
+      const res = await fetch("/api/feedback", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ trace_id: traceId, rating }),
+      });
+      if (res.ok) {
+        btn.classList.add("selected");
+      } else {
+        div.querySelectorAll("button").forEach((b) => (b.disabled = false));
+      }
+    } catch {
+      div.querySelectorAll("button").forEach((b) => (b.disabled = false));
+    }
+  };
+
+  div.querySelector(".feedback-up").addEventListener("click", (e) => send("up", e.currentTarget));
+  div.querySelector(".feedback-down").addEventListener("click", (e) => send("down", e.currentTarget));
+  container.appendChild(div);
+}
+
+function renderAnswer(entry, text, traceId) {
   entry.innerHTML = `<strong>Assistant:</strong> <span></span>`;
   entry.querySelector("span").innerHTML = linkify(text);
+  if (traceId) {
+    renderFeedback(entry, traceId);
+  }
 }
 
 function renderPendingAction(entry, pendingId, description) {
@@ -116,7 +151,7 @@ function renderResult(entry, data) {
   if (data.type === "pending_action") {
     renderPendingAction(entry, data.pending_id, data.description);
   } else {
-    renderAnswer(entry, data.answer);
+    renderAnswer(entry, data.answer, data.trace_id);
   }
 }
 
