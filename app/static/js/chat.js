@@ -1,3 +1,35 @@
+const personaPicker = document.getElementById("persona-picker");
+const switchPersonaLink = document.getElementById("switch-persona-link");
+
+if (personaPicker) {
+  personaPicker.addEventListener("click", async (event) => {
+    const card = event.target.closest(".persona-card");
+    if (!card) {
+      return;
+    }
+    card.disabled = true;
+    try {
+      await fetch("/api/select-persona", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ persona_id: card.dataset.personaId }),
+      });
+      window.location.reload();
+    } catch (err) {
+      card.disabled = false;
+    }
+  });
+}
+
+if (switchPersonaLink) {
+  switchPersonaLink.addEventListener("click", async (event) => {
+    event.preventDefault();
+    await fetch("/api/clear-persona", { method: "POST", credentials: "same-origin" });
+    window.location.reload();
+  });
+}
+
 const form = document.getElementById("ask-form");
 const input = document.getElementById("question-input");
 const button = document.getElementById("ask-button");
@@ -36,7 +68,60 @@ function linkify(text) {
 }
 
 function renderAnswer(entry, text) {
+  entry.innerHTML = `<strong>Assistant:</strong> <span></span>`;
   entry.querySelector("span").innerHTML = linkify(text);
+}
+
+function renderPendingAction(entry, pendingId, description) {
+  entry.classList.add("pending-action");
+  entry.innerHTML = `
+    <strong>Assistant:</strong>
+    <p class="pending-action-description"></p>
+    <div class="pending-action-buttons">
+      <button type="button" class="confirm-btn">Confirm</button>
+      <button type="button" class="cancel-btn">Cancel</button>
+    </div>
+  `;
+  entry.querySelector(".pending-action-description").textContent = description;
+
+  const resolve = async (decision) => {
+    entry.querySelectorAll("button").forEach((b) => (b.disabled = true));
+    try {
+      const res = await fetch("/api/confirm-action", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pending_id: pendingId, decision }),
+      });
+      const data = await res.json();
+      entry.classList.remove("pending-action");
+      if (!res.ok) {
+        entry.classList.add("error-text");
+        entry.innerHTML = `<strong>Assistant:</strong> <span></span>`;
+        entry.querySelector("span").textContent = data.error || "Something went wrong.";
+        return;
+      }
+      renderResult(entry, data);
+    } catch (err) {
+      entry.classList.remove("pending-action");
+      entry.classList.add("error-text");
+      entry.innerHTML = `<strong>Assistant:</strong> <span></span>`;
+      entry.querySelector("span").textContent = String(err);
+    } finally {
+      transcript.scrollTop = transcript.scrollHeight;
+    }
+  };
+
+  entry.querySelector(".confirm-btn").addEventListener("click", () => resolve("confirm"));
+  entry.querySelector(".cancel-btn").addEventListener("click", () => resolve("cancel"));
+}
+
+function renderResult(entry, data) {
+  if (data.type === "pending_action") {
+    renderPendingAction(entry, data.pending_id, data.description);
+  } else {
+    renderAnswer(entry, data.answer);
+  }
 }
 
 function addEntry(role, text, isError = false) {
@@ -51,16 +136,18 @@ function addEntry(role, text, isError = false) {
   return entry;
 }
 
-starters.addEventListener("click", (event) => {
-  const chip = event.target.closest(".starter-chip");
-  if (!chip) {
-    return;
-  }
-  input.value = chip.textContent;
-  form.requestSubmit();
-});
+if (starters) {
+  starters.addEventListener("click", (event) => {
+    const chip = event.target.closest(".starter-chip");
+    if (!chip) {
+      return;
+    }
+    input.value = chip.textContent;
+    form.requestSubmit();
+  });
+}
 
-form.addEventListener("submit", async (event) => {
+if (form) form.addEventListener("submit", async (event) => {
   event.preventDefault();
 
   const question = input.value.trim();
@@ -89,7 +176,7 @@ form.addEventListener("submit", async (event) => {
       return;
     }
 
-    renderAnswer(pending, data.answer);
+    renderResult(pending, data);
   } catch (err) {
     pending.classList.add("error-text");
     pending.querySelector("span").textContent = String(err);

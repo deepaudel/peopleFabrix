@@ -3,15 +3,38 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>peopleFabrix — HR Assistant</title>
+  <title>PeopleFabrix — HR Assistant</title>
   <link rel="stylesheet" href="/static/css/style.css?v={{ asset_version }}">
 </head>
 <body>
   <header class="app-header">
-    <h1>peopleFabrix{% if demo_mode %} <span class="demo-badge">Demo — Sample Content</span>{% endif %}</h1>
-    <p>Ask anything about HR policies, benefits, or your team.</p>
+    <div class="app-header-inner">
+      <img class="brand-logo" src="/static/img/logo.png?v={{ asset_version }}" alt="PeopleFabrix">
+      {% if demo_mode %}<span class="demo-badge">Demo — Sample Content</span>{% endif %}
+      {% if persona %}
+      <p class="persona-badge">
+        You are: <strong>{{ persona.display_name }}</strong> ({{ persona.title }})
+        · <a href="#" id="switch-persona-link">switch</a>
+      </p>
+      {% endif %}
+    </div>
   </header>
 
+  {% if not persona %}
+  <div class="persona-picker" id="persona-picker">
+    <div class="persona-picker-inner">
+      <p>Who are you signing in as? (Standing in for real login while there's no SSO yet.)</p>
+      <div class="persona-cards">
+        {% for p in personas %}
+        <button type="button" class="persona-card" data-persona-id="{{ p.id }}">
+          <span class="persona-card-name">{{ p.display_name }}</span>
+          <span class="persona-card-role">{{ p.title }} · {{ p.department }}</span>
+        </button>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+  {% else %}
   <main class="panels">
     <section class="panel" id="question-panel">
       <h2>Ask a question</h2>
@@ -33,6 +56,7 @@
       </div>
     </section>
   </main>
+  {% endif %}
 
   <script src="/static/js/chat.js?v={{ asset_version }}"></script>
 </body>

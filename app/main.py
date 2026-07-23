@@ -1,78 +1,40 @@
 import os
 import uuid
+from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Literal
 
+from anthropic import APIError
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from openai import APIError, OpenAI
 from pydantic import BaseModel
 
-from app import history
-from app.rag.retrieve import get_relevant_chunks
+from app.mcp_client import MCPClientManager
+from app.orchestrator import answer_question, langfuse, resume_pending_action
+from app.personas import PERSONA_COOKIE_NAME, PERSONAS, resolve_persona
 
 load_dotenv()
 
 APP_DIR = Path(__file__).parent
-DEFAULT_MODEL = "gpt-4o-mini"
 SESSION_COOKIE_NAME = "session_id"
 ASSET_VERSION = os.environ.get("RAILWAY_DEPLOYMENT_ID", "dev")
 DEMO_MODE = os.environ.get("DEMO_MODE", "false").lower() == "true"
 
-SYSTEM_PROMPT = """You are an internal HR and workforce assistant for the company.
-Your role is to help employees and managers understand HR policies, benefits, workplace procedures, and workforce information using the company-provided context.
-Core Response Rules
 
-1. Use the provided context first
-   * Base company-specific answers only on the retrieved context provided with the user’s question.
-   * Treat the retrieved documents as the primary source of truth.
-   * Do not rely on general knowledge when the answer depends on company policy, benefits, eligibility, deadlines, procedures, or employee data.
-2. Do not guess or invent information
-   * If the provided context does not contain enough information to answer accurately, clearly say that the available documents do not cover the question.
-   * Do not create policy details, eligibility rules, dates, amounts, contacts, or procedures.
-   * When appropriate, recommend contacting HR, the Benefits team, the employee’s manager, or another relevant internal support team.
-3. Answer the specific question
-   * Focus on the user’s actual request.
-   * Do not include unrelated policy information.
-   * When the question contains multiple parts, answer each part separately.
-4. Cite supporting sources
-   * Cite the source URL for every company-specific policy or factual claim derived from the retrieved context.
-   * Place citations near the statements they support.
-   * Do not cite a source unless it directly supports the answer.
-   * If no valid source URL is available, state that the answer is based on the provided document but that no source link was supplied.
-5. Handle conflicting information carefully
-   * If retrieved sources conflict, do not choose one silently.
-   * Explain the conflict, cite both sources, and recommend confirming with HR.
-   * Give preference to the most recent document only when its effective date or revision date clearly indicates that it supersedes the older source.
-6. Protect privacy and sensitive information
-   * Do not reveal personal, confidential, medical, compensation, performance, disciplinary, or other sensitive employee information unless the user is authorized and the information is explicitly available in the provided context.
-   * Never infer sensitive employee information.
-   * If authorization is unclear, provide general guidance instead of personal data.
-7. Use clear and supportive language
-   * Be professional, respectful, and easy to understand.
-   * Use plain language and define HR terms when necessary.
-   * Keep the answer concise, but include important conditions, exceptions, deadlines, and next steps.
-   * Use bullets or numbered steps when they improve readability.
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    mcp = MCPClientManager()
+    await mcp.start()
+    app.state.mcp = mcp
+    yield
+    await mcp.stop()
+    langfuse.flush()
 
-Response Format
-Use the following structure when appropriate:
-Answer
-Provide a direct response to the question.
-Important details
-Include relevant eligibility rules, exceptions, deadlines, required actions, or limitations.
-Next step
-Explain what the user should do next, especially when the available context is incomplete.
-Sources
-List the supporting document titles and source URLs.
-When Information Is Missing
-Use language such as:
-“The available HR documents do not provide enough information to answer this accurately. I do not want to guess. Please contact HR or the appropriate internal support team for confirmation.”
-Important Limitation
-You provide informational assistance based on company-provided documents. You do not make employment decisions, approve requests, interpret legal obligations, or replace official guidance from HR, Legal, Payroll, Benefits, or company leadership."""
 
-app = FastAPI(title="peoplefabrix")
+app = FastAPI(title="peoplefabrix", lifespan=lifespan)
 
 
 @app.middleware("http")
@@ -91,8 +53,9 @@ class AskRequest(BaseModel):
     question: str
 
 
-class AskResponse(BaseModel):
-    answer: str
+class ConfirmActionRequest(BaseModel):
+    pending_id: str
+    decision: Literal["confirm", "cancel"]
 
 
 def get_or_create_session_id(request: Request) -> tuple[str, bool]:
@@ -106,34 +69,60 @@ def set_session_cookie(response, session_id: str) -> None:
     response.set_cookie(key=SESSION_COOKIE_NAME, value=session_id, httponly=True, samesite="lax")
 
 
-def build_user_content(question: str, chunks: list[dict]) -> str:
-    if not chunks:
-        return question
+def set_persona_cookie(response, persona_id: str) -> None:
+    response.set_cookie(key=PERSONA_COOKIE_NAME, value=persona_id, httponly=True, samesite="lax")
 
-    context_block = "\n\n---\n\n".join(
-        f"Source: {c['title']} ({c['source_url']})\n{c['text']}" for c in chunks
-    )
-    return f"Relevant handbook context:\n\n{context_block}\n\n---\n\nQuestion: {question}"
+
+class SelectPersonaRequest(BaseModel):
+    persona_id: str
 
 
 @app.get("/", response_class=HTMLResponse)
 def read_root(request: Request):
     session_id, is_new = get_or_create_session_id(request)
+    persona = resolve_persona(request)
     response = templates.TemplateResponse(
-        request, "index.html", {"asset_version": ASSET_VERSION, "demo_mode": DEMO_MODE}
+        request,
+        "index.html",
+        {
+            "asset_version": ASSET_VERSION,
+            "demo_mode": DEMO_MODE,
+            "persona": persona,
+            "personas": PERSONAS.values(),
+        },
     )
     if is_new:
         set_session_cookie(response, session_id)
     return response
 
 
+@app.post("/api/select-persona")
+def select_persona(payload: SelectPersonaRequest):
+    if payload.persona_id not in PERSONAS:
+        return JSONResponse(status_code=400, content={"error": "Unknown persona."})
+    response = JSONResponse(content={"ok": True})
+    set_persona_cookie(response, payload.persona_id)
+    return response
+
+
+@app.post("/api/clear-persona")
+def clear_persona():
+    response = JSONResponse(content={"ok": True})
+    response.delete_cookie(PERSONA_COOKIE_NAME)
+    return response
+
+
 @app.get("/health")
-def health():
-    return {"status": "healthy"}
+def health(request: Request):
+    mcp: MCPClientManager = request.app.state.mcp
+    return {
+        "status": "healthy",
+        "mcp_tools": [t["name"] for t in mcp.claude_tool_defs],
+    }
 
 
 @app.post("/api/ask")
-def ask(payload: AskRequest, request: Request):
+async def ask(payload: AskRequest, request: Request):
     session_id, is_new = get_or_create_session_id(request)
     question = payload.question.strip()
 
@@ -143,39 +132,60 @@ def ask(payload: AskRequest, request: Request):
             set_session_cookie(response, session_id)
         return response
 
-    api_key = os.environ.get("OPENAI_API_KEY")
-    if not api_key:
+    persona = resolve_persona(request)
+    if persona is None:
+        response = JSONResponse(status_code=400, content={"error": "No persona selected."})
+        if is_new:
+            set_session_cookie(response, session_id)
+        return response
+
+    if not os.environ.get("ANTHROPIC_API_KEY"):
         response = JSONResponse(
             status_code=500,
-            content={"error": "Server is not configured with an OPENAI_API_KEY."},
+            content={"error": "Server is not configured with an ANTHROPIC_API_KEY."},
         )
         if is_new:
             set_session_cookie(response, session_id)
         return response
 
-    model = os.environ.get("OPENAI_MODEL", DEFAULT_MODEL)
-    client = OpenAI(api_key=api_key)
-
-    chunks = get_relevant_chunks(question)
-    prior_history = history.get_history(session_id)
-    messages = (
-        [{"role": "system", "content": SYSTEM_PROMPT}]
-        + prior_history
-        + [{"role": "user", "content": build_user_content(question, chunks)}]
-    )
+    mcp: MCPClientManager = request.app.state.mcp
 
     try:
-        completion = client.chat.completions.create(model=model, max_tokens=1024, messages=messages)
+        result = await answer_question(question, session_id, persona, mcp)
     except APIError as e:
-        response = JSONResponse(status_code=502, content={"error": f"OpenAI API error: {e}"})
+        response = JSONResponse(status_code=502, content={"error": f"Anthropic API error: {e}"})
         if is_new:
             set_session_cookie(response, session_id)
         return response
 
-    answer = completion.choices[0].message.content
-    history.append_turn(session_id, question, answer)
+    response = JSONResponse(content=result)
+    if is_new:
+        set_session_cookie(response, session_id)
+    return response
 
-    response = JSONResponse(content=AskResponse(answer=answer).model_dump())
+
+@app.post("/api/confirm-action")
+async def confirm_action(payload: ConfirmActionRequest, request: Request):
+    session_id, is_new = get_or_create_session_id(request)
+
+    persona = resolve_persona(request)
+    if persona is None:
+        response = JSONResponse(status_code=400, content={"error": "No persona selected."})
+        if is_new:
+            set_session_cookie(response, session_id)
+        return response
+
+    mcp: MCPClientManager = request.app.state.mcp
+
+    try:
+        result = await resume_pending_action(payload.pending_id, payload.decision, session_id, persona, mcp)
+    except APIError as e:
+        response = JSONResponse(status_code=502, content={"error": f"Anthropic API error: {e}"})
+        if is_new:
+            set_session_cookie(response, session_id)
+        return response
+
+    response = JSONResponse(content=result)
     if is_new:
         set_session_cookie(response, session_id)
     return response
