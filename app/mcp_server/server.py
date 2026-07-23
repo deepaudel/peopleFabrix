@@ -104,9 +104,13 @@ def warehouse_query(
 
     Available queries: headcount_by_department, average_tenure_by_department,
     pto_usage_trend. department_filter is optional and narrows any of them to
-    a single department.
+    a single department. Access is role-scoped: employees are not authorized
+    for this tool at all; managers are automatically scoped to their own
+    department (a department_filter for a different department is denied);
+    HRBPs can query any department or the whole company. Denied requests
+    return an error, not a crash.
     """
-    return warehouse_data.run_query(query_name, department_filter)
+    return warehouse_data.run_query(actor_persona_id, query_name, department_filter)
 
 
 if __name__ == "__main__":

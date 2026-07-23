@@ -3,9 +3,16 @@ a few pre-vetted, parameterized query templates — deliberately not free-form
 SQL/text-to-SQL. Swapping in a real warehouse later means replacing the body
 of run_query() with real queries against Snowflake/BigQuery/etc.; the
 query_name/department_filter calling convention stays the same.
+
+Access, same scoping spirit as hris_store: employees have no access (this is
+cross-employee aggregate data, not their own record); managers are
+auto-scoped to their own department and cannot query others; HRBPs have
+full access to any department or company-wide.
 """
 
 from datetime import date
+
+from app.personas import PERSONAS
 
 _DEPARTMENTS = ["Engineering", "Product", "People", "Sales", "Marketing"]
 
@@ -41,9 +48,46 @@ def _tenure_months(hire_date: date, today: date) -> float:
     return (today - hire_date).days / 30.44
 
 
-def run_query(query_name: str, department_filter: str | None = None) -> dict:
+def _check_access(actor_persona_id: str, department_filter: str | None) -> tuple[dict | None, str | None]:
+    """Returns (error, effective_department_filter). error is None if authorized."""
+    actor = PERSONAS.get(actor_persona_id)
+    if actor is None:
+        return {"error": "not_authorized", "message": "Unknown persona."}, department_filter
+
+    if actor.role == "hrbp":
+        return None, department_filter
+
+    if actor.role == "manager":
+        if department_filter and department_filter.lower() != actor.department.lower():
+            return (
+                {
+                    "error": "not_authorized",
+                    "message": (
+                        f"As a manager, you can only view workforce analytics for your own "
+                        f"department ({actor.department}). Contact an HRBP for company-wide "
+                        f"or cross-department data."
+                    ),
+                },
+                department_filter,
+            )
+        return None, department_filter or actor.department
+
+    return (
+        {
+            "error": "not_authorized",
+            "message": "Workforce analytics access is limited to managers and HR Business Partners.",
+        },
+        department_filter,
+    )
+
+
+def run_query(actor_persona_id: str, query_name: str, department_filter: str | None = None) -> dict:
     if query_name not in QUERY_NAMES:
         return {"error": "unknown_query", "message": f"'{query_name}' is not a recognized query."}
+
+    error, department_filter = _check_access(actor_persona_id, department_filter)
+    if error:
+        return error
 
     rows = _filtered(department_filter)
     if not rows:

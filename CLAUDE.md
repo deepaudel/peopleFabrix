@@ -100,7 +100,10 @@ pairs), and resumes the same `_run_loop` to get Claude's natural-language confir
 **Mock workforce warehouse (`app/mcp_server/warehouse_data.py`):** a small synthetic employee
 table backing exactly 3 named, parameterized query templates (`headcount_by_department`,
 `average_tenure_by_department`, `pto_usage_trend`) — deliberately not free-form
-SQL/text-to-SQL. A real data-warehouse integration later replaces `run_query`'s body.
+SQL/text-to-SQL. A real data-warehouse integration later replaces `run_query`'s body. Role-scoped
+like the HRIS tools (`_check_access`): employees have no access at all (this is cross-employee
+aggregate data, not their own record); managers are auto-scoped to their own department and
+denied if they request a `department_filter` for a different one; HRBPs have full access.
 
 **Langfuse tracing (`app/orchestrator.py`):** `@observe(name="ask")` on `answer_question` (and
 `@observe(name="confirm-action")` on `resume_pending_action`) creates the root trace;
