@@ -97,6 +97,41 @@ the real `confirm`/`cancel` to MCP, appends the outcome as a plain-text note (no
 tool_result — simpler and avoids Claude API constraints around unmatched tool_use/tool_result
 pairs), and resumes the same `_run_loop` to get Claude's natural-language confirmation.
 
+**Live step + token streaming ("agent transparency"), over SSE:** `_run_loop`,
+`answer_question`, and `resume_pending_action` are `async def` **generators**, not
+`return`-once coroutines — `main.py`'s `/api/ask` and `/api/confirm-action` wrap them in a
+`StreamingResponse` (`text/event-stream`), forwarding each yielded `{"kind": ...}` dict as one
+SSE message (`event: {kind}\ndata: {json}\n\n`). Event kinds: `step` (before each tool
+dispatch), `answer_reset` (before every Claude generation's text starts — needed because a
+generation that ends in `stop_reason=="tool_use"` may have produced throwaway preamble text
+that must not persist once the next generation's deltas arrive), `answer_delta` (one per text
+token, via `client.messages.stream(...)` + `stream.text_stream`, **not** `messages.create`),
+and exactly one terminal `result` (or `error`) per request — same payload shape as the old
+buffered JSON response, wrapped via the `_result()` helper so every yield carries a `kind` key.
+`dispatch_tool` and `get_final_message()` are otherwise unchanged from the pre-streaming version
+— `stream.text_stream` already filters out tool-input JSON deltas, and `get_final_message()`
+returns the same `Message` shape `_run_loop` always used for `stop_reason`/tool_use detection.
+
+`@observe` (Langfuse) **does** support decorating an async-generator function — confirmed by
+reading the installed SDK: it dispatches via `inspect.isasyncgen`, not the coroutine path, into
+a wrapper that preserves OTel context across `yield`s and closes the span once fully drained
+*or* explicitly closed (client disconnect → clean span finalization, no leak). No trace
+restructuring was needed for streaming — only the calling convention (`async for` instead of
+`await`) changed. Delegating a sub-generator requires `async for item in _run_loop(...): yield
+item` — **not** `yield from`, which is sync-only and a `SyntaxError` on an async generator.
+
+Frontend (`app/static/js/chat.js`): `streamRequest()` reads `res.body.getReader()`, decodes with
+`TextDecoder({stream: true})` (required — without it, a multi-byte UTF-8 character split across
+network chunks gets mangled), buffers and splits on `"\n\n"` to find complete SSE messages (one
+chunk can contain zero, one, or many; a message can span multiple chunks), and dispatches to
+`onStep`/`onAnswerReset`/`onAnswerDelta`/`onResult`/`onError`. Streamed text is appended as
+**plain `textContent`**, never `linkify()`'d — that regex-based markdown-link/URL conversion is
+unsafe against partial/incomplete text. Only the terminal `onResult` calls the existing
+`renderResult()` for the final, fully-`linkify()`'d render, overwriting whatever was built
+incrementally — this is why `renderResult`/`renderAnswer`/`renderPendingAction` needed no
+changes at all for streaming. The "Show steps" toggle (`localStorage`, default on) only gates
+whether `onStep` appends visible `<li>`s — the stream is always fully consumed either way.
+
 **Mock workforce warehouse (`app/mcp_server/warehouse_data.py`):** a small synthetic employee
 table backing exactly 3 named, parameterized query templates (`headcount_by_department`,
 `average_tenure_by_department`, `pto_usage_trend`) — deliberately not free-form

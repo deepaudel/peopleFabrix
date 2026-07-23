@@ -27,6 +27,13 @@ SONNET_MODEL = "claude-sonnet-5"
 HAIKU_MODEL = "claude-haiku-4-5-20251001"
 MAX_TOOL_ITERATIONS = 6
 
+STEP_LABELS = {
+    "policy_search": "Searching policy documents",
+    "hris_read": "Checking HR record",
+    "hris_write": "Preparing HR record change",
+    "warehouse_query": "Querying workforce analytics",
+}
+
 SYSTEM_PROMPT_TEMPLATE = """You are an internal HR and workforce assistant for the company.
 Your role is to help employees and managers understand HR policies, benefits, workplace procedures, and workforce information.
 
@@ -114,6 +121,13 @@ async def dispatch_tool(mcp: MCPClientManager, tool_name: str, tool_input: dict,
         return result
 
 
+def _result(payload: dict) -> dict:
+    """Wraps a terminal answer/pending_action payload with the SSE 'kind'
+    discriminator, so main.py's event writer can key off item["kind"]
+    uniformly for every yielded item, not just step/answer_delta ones."""
+    return {"kind": "result", **payload}
+
+
 def _pending_confirmation_id(tool_name: str, result: dict) -> str | None:
     """If this tool result represents an HRIS write awaiting user
     confirmation, returns its pending_id — else None. This is the hook the
@@ -132,18 +146,26 @@ async def _run_loop(
     persona: Persona,
     session_id: str,
     question: str,
-) -> dict:
+):
+    """Async generator: yields {"kind": "answer_reset"/"answer_delta", ...}
+    as Claude streams each generation's text, {"kind": "step", ...} events
+    as tools are dispatched, then exactly one {"kind": "result", ...} as
+    the terminal item."""
     for _ in range(MAX_TOOL_ITERATIONS):
         with langfuse.start_as_current_observation(
             name=f"claude:{model}", as_type="generation", model=model, input=messages
         ) as gen:
-            response = await client.messages.create(
+            yield {"kind": "answer_reset"}
+            async with client.messages.stream(
                 model=model,
                 max_tokens=1024,
                 system=system,
                 tools=mcp.claude_tool_defs,
                 messages=messages,
-            )
+            ) as stream:
+                async for text in stream.text_stream:
+                    yield {"kind": "answer_delta", "text": text}
+                response = await stream.get_final_message()
             gen.update(
                 output=[block.model_dump() for block in response.content],
                 usage_details={
@@ -155,7 +177,8 @@ async def _run_loop(
         if response.stop_reason != "tool_use":
             answer = extract_text(response)
             history.append_turn(session_id, question, answer)
-            return {"type": "answer", "answer": answer}
+            yield _result({"type": "answer", "answer": answer})
+            return
 
         messages.append({"role": "assistant", "content": response.content})
 
@@ -164,6 +187,11 @@ async def _run_loop(
         for block in response.content:
             if block.type != "tool_use":
                 continue
+            yield {
+                "kind": "step",
+                "tool": block.name,
+                "label": STEP_LABELS.get(block.name, f"Running {block.name}"),
+            }
             result = await dispatch_tool(mcp, block.name, block.input, persona)
             tool_results.append(
                 {"type": "tool_result", "tool_use_id": block.id, "content": json.dumps(result)}
@@ -183,15 +211,16 @@ async def _run_loop(
                 messages=messages,
                 model=model,
             )
-            return {"type": "pending_action", "pending_id": pending_id, "description": description}
+            yield _result({"type": "pending_action", "pending_id": pending_id, "description": description})
+            return
 
     fallback = "I wasn't able to finish that — could you rephrase or narrow the question?"
     history.append_turn(session_id, question, fallback)
-    return {"type": "answer", "answer": fallback}
+    yield _result({"type": "answer", "answer": fallback})
 
 
 @observe(name="ask")
-async def answer_question(question: str, session_id: str, persona: Persona, mcp: MCPClientManager) -> dict:
+async def answer_question(question: str, session_id: str, persona: Persona, mcp: MCPClientManager):
     with propagate_attributes(
         user_id=persona.id,
         session_id=session_id,
@@ -204,13 +233,14 @@ async def answer_question(question: str, session_id: str, persona: Persona, mcp:
         messages = history.get_history(session_id) + [{"role": "user", "content": question}]
         system = build_system_prompt(persona)
 
-        return await _run_loop(client, model, system, messages, mcp, persona, session_id, question)
+        async for item in _run_loop(client, model, system, messages, mcp, persona, session_id, question):
+            yield item
 
 
 @observe(name="confirm-action")
 async def resume_pending_action(
     pending_id: str, decision: str, session_id: str, persona: Persona, mcp: MCPClientManager
-) -> dict:
+):
     with propagate_attributes(
         user_id=persona.id,
         session_id=session_id,
@@ -218,9 +248,15 @@ async def resume_pending_action(
     ):
         entry = pending_actions.pop(pending_id, session_id, persona.id)
         if entry is None:
-            return {"type": "answer", "answer": "That request has expired or was already handled."}
+            yield _result({"type": "answer", "answer": "That request has expired or was already handled."})
+            return
 
         mcp_action = "confirm" if decision == "confirm" else "cancel"
+        yield {
+            "kind": "step",
+            "tool": "hris_write",
+            "label": "Applying HR record change" if decision == "confirm" else "Cancelling change",
+        }
         outcome = await dispatch_tool(
             mcp, "hris_write", {"action": mcp_action, "pending_id": pending_id}, persona
         )
@@ -234,6 +270,7 @@ async def resume_pending_action(
         client = AsyncAnthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
         system = build_system_prompt(persona)
 
-        return await _run_loop(
+        async for item in _run_loop(
             client, entry["model"], system, messages, mcp, persona, session_id, entry["question"]
-        )
+        ):
+            yield item

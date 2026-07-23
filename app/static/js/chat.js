@@ -38,6 +38,21 @@ const starters = document.getElementById("starters");
 
 let hasEntries = false;
 
+const STEPS_STORAGE_KEY = "pf_show_steps";
+const showStepsToggle = document.getElementById("show-steps-toggle");
+
+function getShowSteps() {
+  const stored = localStorage.getItem(STEPS_STORAGE_KEY);
+  return stored === null ? true : stored === "true";
+}
+
+if (showStepsToggle) {
+  showStepsToggle.checked = getShowSteps();
+  showStepsToggle.addEventListener("change", () => {
+    localStorage.setItem(STEPS_STORAGE_KEY, String(showStepsToggle.checked));
+  });
+}
+
 function clearPlaceholder() {
   if (!hasEntries) {
     transcript.innerHTML = "";
@@ -86,30 +101,11 @@ function renderPendingAction(entry, pendingId, description) {
 
   const resolve = async (decision) => {
     entry.querySelectorAll("button").forEach((b) => (b.disabled = true));
-    try {
-      const res = await fetch("/api/confirm-action", {
-        method: "POST",
-        credentials: "same-origin",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ pending_id: pendingId, decision }),
-      });
-      const data = await res.json();
-      entry.classList.remove("pending-action");
-      if (!res.ok) {
-        entry.classList.add("error-text");
-        entry.innerHTML = `<strong>Assistant:</strong> <span></span>`;
-        entry.querySelector("span").textContent = data.error || "Something went wrong.";
-        return;
-      }
-      renderResult(entry, data);
-    } catch (err) {
-      entry.classList.remove("pending-action");
-      entry.classList.add("error-text");
-      entry.innerHTML = `<strong>Assistant:</strong> <span></span>`;
-      entry.querySelector("span").textContent = String(err);
-    } finally {
-      transcript.scrollTop = transcript.scrollHeight;
-    }
+    await streamRequest(
+      "/api/confirm-action",
+      { pending_id: pendingId, decision },
+      makeStreamHandlers(entry, () => entry.classList.remove("pending-action"))
+    );
   };
 
   entry.querySelector(".confirm-btn").addEventListener("click", () => resolve("confirm"));
@@ -124,6 +120,12 @@ function renderResult(entry, data) {
   }
 }
 
+function renderError(entry, message) {
+  entry.classList.add("error-text");
+  entry.innerHTML = `<strong>Assistant:</strong> <span></span>`;
+  entry.querySelector("span").textContent = message || "Something went wrong.";
+}
+
 function addEntry(role, text, isError = false) {
   clearPlaceholder();
   const entry = document.createElement("div");
@@ -134,6 +136,143 @@ function addEntry(role, text, isError = false) {
   transcript.appendChild(entry);
   transcript.scrollTop = transcript.scrollHeight;
   return entry;
+}
+
+function addStreamingEntry() {
+  clearPlaceholder();
+  const entry = document.createElement("div");
+  entry.className = "transcript-entry assistant";
+  entry.innerHTML = `
+    <strong>Assistant:</strong>
+    <ul class="step-list"></ul>
+    <span class="answer-text">Thinking…</span>
+  `;
+  transcript.appendChild(entry);
+  transcript.scrollTop = transcript.scrollHeight;
+  return entry;
+}
+
+// Parses one complete SSE message ("event: x\ndata: y") and dispatches it
+// to the matching handler.
+function dispatchSSEMessage(raw, handlers) {
+  let eventName = "message";
+  const dataLines = [];
+  for (const line of raw.split("\n")) {
+    if (line.startsWith("event:")) {
+      eventName = line.slice(6).trim();
+    } else if (line.startsWith("data:")) {
+      dataLines.push(line.slice(5).trim());
+    }
+  }
+  if (!dataLines.length) {
+    return;
+  }
+  const data = JSON.parse(dataLines.join("\n"));
+  if (eventName === "step") handlers.onStep(data);
+  else if (eventName === "answer_reset") handlers.onAnswerReset();
+  else if (eventName === "answer_delta") handlers.onAnswerDelta(data.text);
+  else if (eventName === "result") handlers.onResult(data);
+  else if (eventName === "error") handlers.onError(data.error);
+}
+
+// POSTs a JSON body and consumes the response as an SSE stream, dispatching
+// each event to the matching handler. Fully consumes the stream regardless
+// of whether steps are being rendered — the "Show steps" toggle only gates
+// rendering, not how much of the stream is read.
+async function streamRequest(url, body, handlers) {
+  let res;
+  try {
+    res = await fetch(url, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  } catch (err) {
+    handlers.onError(String(err));
+    return;
+  }
+
+  if (!res.ok) {
+    let data = {};
+    try {
+      data = await res.json();
+    } catch {
+      // response wasn't JSON — fall through with an empty error message
+    }
+    handlers.onError(data.error || `Request failed (${res.status})`);
+    return;
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
+      }
+      buffer += decoder.decode(value, { stream: true });
+      let idx;
+      while ((idx = buffer.indexOf("\n\n")) !== -1) {
+        const rawMessage = buffer.slice(0, idx);
+        buffer = buffer.slice(idx + 2);
+        dispatchSSEMessage(rawMessage, handlers);
+      }
+    }
+    if (buffer.trim()) {
+      console.warn("SSE stream ended with unterminated message:", buffer);
+    }
+  } catch (err) {
+    handlers.onError(String(err));
+  }
+}
+
+// Builds the standard set of stream handlers for a transcript entry that's
+// showing live steps + a streaming answer, finishing with the same
+// renderResult() used everywhere else once the terminal event arrives.
+function makeStreamHandlers(entry, onBeforeResult) {
+  const stepList = entry.querySelector(".step-list");
+  const answerText = entry.querySelector(".answer-text");
+  let sawAnyDelta = false;
+
+  return {
+    onStep(data) {
+      if (!getShowSteps() || !stepList) {
+        return;
+      }
+      const li = document.createElement("li");
+      li.textContent = data.label;
+      stepList.appendChild(li);
+      transcript.scrollTop = transcript.scrollHeight;
+    },
+    onAnswerReset() {
+      sawAnyDelta = false;
+      if (answerText) {
+        answerText.textContent = "";
+      }
+    },
+    onAnswerDelta(text) {
+      if (!answerText) {
+        return;
+      }
+      sawAnyDelta = true;
+      answerText.textContent += text;
+      transcript.scrollTop = transcript.scrollHeight;
+    },
+    onResult(data) {
+      if (onBeforeResult) {
+        onBeforeResult();
+      }
+      renderResult(entry, data);
+      transcript.scrollTop = transcript.scrollHeight;
+    },
+    onError(message) {
+      renderError(entry, message);
+      transcript.scrollTop = transcript.scrollHeight;
+    },
+  };
 }
 
 if (starters) {
@@ -158,28 +297,10 @@ if (form) form.addEventListener("submit", async (event) => {
   button.disabled = true;
   addEntry("user", question);
   input.value = "";
-  const pending = addEntry("assistant", "Thinking…");
+  const pending = addStreamingEntry();
 
   try {
-    const res = await fetch("/api/ask", {
-      method: "POST",
-      credentials: "same-origin",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ question }),
-    });
-
-    const data = await res.json();
-
-    if (!res.ok) {
-      pending.classList.add("error-text");
-      pending.querySelector("span").textContent = data.error || "Something went wrong.";
-      return;
-    }
-
-    renderResult(pending, data);
-  } catch (err) {
-    pending.classList.add("error-text");
-    pending.querySelector("span").textContent = String(err);
+    await streamRequest("/api/ask", { question }, makeStreamHandlers(pending));
   } finally {
     button.disabled = false;
     transcript.scrollTop = transcript.scrollHeight;

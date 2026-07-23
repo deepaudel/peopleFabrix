@@ -1,3 +1,4 @@
+import json
 import os
 import uuid
 from contextlib import asynccontextmanager
@@ -7,7 +8,7 @@ from typing import Literal
 from anthropic import APIError
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
@@ -75,6 +76,29 @@ def set_persona_cookie(response, persona_id: str) -> None:
 
 class SelectPersonaRequest(BaseModel):
     persona_id: str
+
+
+def _sse_event(item: dict) -> str:
+    return f"event: {item['kind']}\ndata: {json.dumps(item)}\n\n"
+
+
+async def _sse_wrap(generator):
+    """Consumes an orchestrator async generator, formatting each yielded
+    item as an SSE message. HTTP status can't change once streaming has
+    started, so an APIError mid-stream becomes an `error` event instead of
+    a different status code."""
+    try:
+        async for item in generator:
+            yield _sse_event(item)
+    except APIError as e:
+        yield _sse_event({"kind": "error", "error": f"Anthropic API error: {e}"})
+
+
+def _sse_response(generator) -> StreamingResponse:
+    response = StreamingResponse(_sse_wrap(generator), media_type="text/event-stream")
+    response.headers["Cache-Control"] = "no-cache"
+    response.headers["X-Accel-Buffering"] = "no"
+    return response
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -150,15 +174,7 @@ async def ask(payload: AskRequest, request: Request):
 
     mcp: MCPClientManager = request.app.state.mcp
 
-    try:
-        result = await answer_question(question, session_id, persona, mcp)
-    except APIError as e:
-        response = JSONResponse(status_code=502, content={"error": f"Anthropic API error: {e}"})
-        if is_new:
-            set_session_cookie(response, session_id)
-        return response
-
-    response = JSONResponse(content=result)
+    response = _sse_response(answer_question(question, session_id, persona, mcp))
     if is_new:
         set_session_cookie(response, session_id)
     return response
@@ -177,15 +193,9 @@ async def confirm_action(payload: ConfirmActionRequest, request: Request):
 
     mcp: MCPClientManager = request.app.state.mcp
 
-    try:
-        result = await resume_pending_action(payload.pending_id, payload.decision, session_id, persona, mcp)
-    except APIError as e:
-        response = JSONResponse(status_code=502, content={"error": f"Anthropic API error: {e}"})
-        if is_new:
-            set_session_cookie(response, session_id)
-        return response
-
-    response = JSONResponse(content=result)
+    response = _sse_response(
+        resume_pending_action(payload.pending_id, payload.decision, session_id, persona, mcp)
+    )
     if is_new:
         set_session_cookie(response, session_id)
     return response
