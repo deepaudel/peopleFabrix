@@ -130,19 +130,65 @@ body {
 
 .panels {
   display: flex;
-  gap: 1.5rem;
   padding: 1.5rem 2rem 2rem;
-  align-items: flex-start;
-  flex-wrap: wrap;
+  align-items: stretch;
 }
 
 .panel {
-  flex: 1 1 320px;
+  flex: 0 0 auto;
+  box-sizing: border-box;
   background: var(--bg-panel);
   border: 1px solid var(--border);
   border-radius: 10px;
   padding: 1.25rem;
   min-height: 260px;
+}
+
+#question-panel {
+  width: calc(40% - 4px);
+}
+
+#response-panel {
+  width: calc(60% - 4px);
+}
+
+.panel-splitter {
+  flex: 0 0 8px;
+  align-self: stretch;
+  cursor: col-resize;
+  position: relative;
+}
+
+.panel-splitter::after {
+  content: "";
+  position: absolute;
+  top: 0.5rem;
+  bottom: 0.5rem;
+  left: 50%;
+  width: 2px;
+  transform: translateX(-50%);
+  background: var(--border);
+  border-radius: 999px;
+}
+
+.panel-splitter:hover::after,
+.panel-splitter.dragging::after {
+  background: var(--accent);
+}
+
+@media (max-width: 700px) {
+  .panel-splitter {
+    display: none;
+  }
+
+  .panels {
+    flex-direction: column;
+  }
+
+  #question-panel,
+  #response-panel {
+    width: 100%;
+  }
 }
 
 .panel h2 {
@@ -151,6 +197,14 @@ body {
   color: var(--muted);
   text-transform: uppercase;
   letter-spacing: 0.04em;
+}
+
+.starters-label {
+  font-size: 0.75rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin: 1.25rem 0 0.5rem;
 }
 
 .starters {
@@ -265,7 +319,7 @@ button:disabled {
   display: flex;
   flex-direction: column;
   gap: 0.9rem;
-  max-height: 420px;
+  max-height: calc(100vh - 260px);
   overflow-y: auto;
 }
 
@@ -285,12 +339,53 @@ button:disabled {
   color: var(--accent);
 }
 
-.transcript-entry.assistant strong {
+.transcript-entry.assistant > strong {
   color: var(--muted);
 }
 
 .transcript-entry a {
   color: var(--accent);
+}
+
+.answer-text p {
+  margin: 0 0 0.75rem;
+}
+
+.answer-text p:last-child {
+  margin-bottom: 0;
+}
+
+.answer-text ul,
+.answer-text ol {
+  margin: 0 0 0.75rem;
+  padding-left: 1.4rem;
+}
+
+.answer-text ul:last-child,
+.answer-text ol:last-child {
+  margin-bottom: 0;
+}
+
+.answer-text li {
+  margin-bottom: 0.35rem;
+}
+
+.answer-text li:last-child {
+  margin-bottom: 0;
+}
+
+.answer-text .answer-heading {
+  font-weight: 600;
+  margin: 1rem 0 0.5rem;
+}
+
+.answer-text .answer-heading:first-child {
+  margin-top: 0;
+}
+
+.answer-text strong {
+  color: var(--text);
+  font-weight: 600;
 }
 
 .placeholder {

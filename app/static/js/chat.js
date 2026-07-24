@@ -53,6 +53,83 @@ if (showStepsToggle) {
   });
 }
 
+// Drag-to-resize split pane between the question and response panels.
+// Width is expressed as the left (question) panel's percentage of the
+// .panels container; the splitter's own width is subtracted so the two
+// panels plus the splitter always sum to exactly 100%.
+const PANEL_WIDTH_STORAGE_KEY = "pf_panel_width";
+const PANEL_WIDTH_MIN = 20;
+const PANEL_WIDTH_MAX = 70;
+const panelsContainer = document.querySelector(".panels");
+const splitter = document.getElementById("panel-splitter");
+const questionPanel = document.getElementById("question-panel");
+const responsePanel = document.getElementById("response-panel");
+
+function applyPanelWidth(leftPercent) {
+  const clamped = Math.min(PANEL_WIDTH_MAX, Math.max(PANEL_WIDTH_MIN, leftPercent));
+  if (questionPanel) {
+    questionPanel.style.width = `calc(${clamped}% - 4px)`;
+  }
+  if (responsePanel) {
+    responsePanel.style.width = `calc(${100 - clamped}% - 4px)`;
+  }
+  return clamped;
+}
+
+if (splitter && panelsContainer && questionPanel && responsePanel) {
+  const stored = localStorage.getItem(PANEL_WIDTH_STORAGE_KEY);
+  applyPanelWidth(stored !== null ? Number(stored) : 40);
+
+  let dragging = false;
+
+  const onMove = (clientX) => {
+    const rect = panelsContainer.getBoundingClientRect();
+    const percent = ((clientX - rect.left) / rect.width) * 100;
+    const clamped = applyPanelWidth(percent);
+    localStorage.setItem(PANEL_WIDTH_STORAGE_KEY, String(clamped));
+  };
+
+  const stopDragging = () => {
+    if (!dragging) {
+      return;
+    }
+    dragging = false;
+    splitter.classList.remove("dragging");
+    document.body.style.cursor = "";
+    document.body.style.userSelect = "";
+  };
+
+  splitter.addEventListener("mousedown", (event) => {
+    event.preventDefault();
+    dragging = true;
+    splitter.classList.add("dragging");
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+  });
+
+  document.addEventListener("mousemove", (event) => {
+    if (dragging) {
+      onMove(event.clientX);
+    }
+  });
+  document.addEventListener("mouseup", stopDragging);
+
+  // Keyboard accessibility: arrow keys nudge the split by 2% while the
+  // splitter has focus, matching the ARIA separator role in index.html.
+  splitter.addEventListener("keydown", (event) => {
+    const current = questionPanel.getBoundingClientRect().width;
+    const total = panelsContainer.getBoundingClientRect().width;
+    const currentPercent = (current / total) * 100;
+    if (event.key === "ArrowLeft") {
+      const clamped = applyPanelWidth(currentPercent - 2);
+      localStorage.setItem(PANEL_WIDTH_STORAGE_KEY, String(clamped));
+    } else if (event.key === "ArrowRight") {
+      const clamped = applyPanelWidth(currentPercent + 2);
+      localStorage.setItem(PANEL_WIDTH_STORAGE_KEY, String(clamped));
+    }
+  });
+}
+
 function clearPlaceholder() {
   if (!hasEntries) {
     transcript.innerHTML = "";
@@ -66,8 +143,13 @@ function escapeHtml(str) {
   return div.innerHTML;
 }
 
-function linkify(text) {
-  let html = escapeHtml(text);
+// Applies inline formatting (bold, markdown links, bare URLs) to a single
+// already-trimmed line. Escapes first, then only ever injects real tags
+// around already-escaped text, same safety order the old linkify() used.
+function formatInline(line) {
+  let html = escapeHtml(line);
+
+  html = html.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
 
   // Markdown-style links: [title](url)
   html = html.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, (_match, title, url) => {
@@ -80,6 +162,58 @@ function linkify(text) {
   });
 
   return html;
+}
+
+// Renders the final, complete answer text as HTML: paragraphs, bold,
+// headings, and bullet/numbered lists. Only ever called on the terminal,
+// fully-arrived answer (see renderAnswer) — never on in-flight streaming
+// deltas, since partial markdown (e.g. an unclosed "**") can't be parsed
+// safely or predictably mid-stream.
+function renderMarkdown(text) {
+  const lines = text.split("\n");
+  const htmlParts = [];
+  let listItems = [];
+  let listTag = null;
+
+  function flushList() {
+    if (listItems.length) {
+      htmlParts.push(`<${listTag}>${listItems.join("")}</${listTag}>`);
+      listItems = [];
+      listTag = null;
+    }
+  }
+
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    const headingMatch = line.match(/^#{1,4}\s+(.*)$/);
+    const bulletMatch = line.match(/^[-*]\s+(.*)$/);
+    const numberedMatch = line.match(/^\d+\.\s+(.*)$/);
+
+    if (headingMatch) {
+      flushList();
+      htmlParts.push(`<p class="answer-heading">${formatInline(headingMatch[1])}</p>`);
+    } else if (bulletMatch) {
+      if (listTag !== "ul") {
+        flushList();
+        listTag = "ul";
+      }
+      listItems.push(`<li>${formatInline(bulletMatch[1])}</li>`);
+    } else if (numberedMatch) {
+      if (listTag !== "ol") {
+        flushList();
+        listTag = "ol";
+      }
+      listItems.push(`<li>${formatInline(numberedMatch[1])}</li>`);
+    } else if (line === "") {
+      flushList();
+    } else {
+      flushList();
+      htmlParts.push(`<p>${formatInline(line)}</p>`);
+    }
+  }
+  flushList();
+
+  return htmlParts.join("");
 }
 
 function renderFeedback(container, traceId) {
@@ -134,7 +268,7 @@ function renderAttachments(container, attachments) {
 function renderAnswer(entry, text, traceId, attachments) {
   const body = entry.querySelector(".entry-body");
   body.innerHTML = `<span class="answer-text"></span>`;
-  body.querySelector(".answer-text").innerHTML = linkify(text);
+  body.querySelector(".answer-text").innerHTML = renderMarkdown(text);
   renderAttachments(body, attachments);
   if (traceId) {
     renderFeedback(body, traceId);

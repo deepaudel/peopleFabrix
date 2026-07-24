@@ -38,13 +38,8 @@
   <main class="panels">
     <section class="panel" id="question-panel">
       <h2>Ask a question</h2>
-      <div class="starters" id="starters">
-        <button type="button" class="starter-chip">How many days of paternity leave do I get?</button>
-        <button type="button" class="starter-chip">When does health insurance begin for a new employee?</button>
-        <button type="button" class="starter-chip">What US holidays are observed this year?</button>
-      </div>
       <form id="ask-form">
-        <textarea id="question-input" placeholder="e.g. How many vacation days do new employees get?" rows="6" required></textarea>
+        <textarea id="question-input" placeholder="e.g. How many vacation days do I get?" rows="6" required></textarea>
         <div class="ask-form-footer">
           <button type="submit" id="ask-button">Ask</button>
           <label class="steps-toggle">
@@ -53,7 +48,18 @@
           </label>
         </div>
       </form>
+
+      <p class="starters-label">Try asking:</p>
+      <div class="starters" id="starters">
+        <button type="button" class="starter-chip">What public holidays do I get this year?</button>
+        <button type="button" class="starter-chip">How many weeks of paid parental leave do I get, and how can I split it up?</button>
+        <button type="button" class="starter-chip">What's my current PTO balance and recommended PTO minimum?</button>
+        <button type="button" class="starter-chip">What's the average tenure in my department?</button>
+        <button type="button" class="starter-chip">Can you generate an employment verification letter for me?</button>
+      </div>
     </section>
+
+    <div class="panel-splitter" id="panel-splitter" role="separator" aria-orientation="vertical" aria-label="Resize panels" tabindex="0"></div>
 
     <section class="panel" id="response-panel">
       <h2>Response</h2>
