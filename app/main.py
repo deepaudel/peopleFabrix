@@ -8,12 +8,13 @@ from typing import Literal
 from anthropic import APIError as AnthropicAPIError
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from openai import APIError as OpenAIAPIError
 from pydantic import BaseModel, Field
 
+from app import documents
 from app.mcp_client import MCPClientManager
 from app.orchestrator import answer_question, langfuse, resume_pending_action
 from app.personas import PERSONA_COOKIE_NAME, PERSONAS, resolve_persona
@@ -197,6 +198,24 @@ def submit_feedback(payload: FeedbackRequest, request: Request):
         metadata={"persona_id": persona.id if persona else None},
     )
     return {"ok": True}
+
+
+@app.get("/api/documents/{token}")
+def download_document(token: str, request: Request):
+    session_id, _ = get_or_create_session_id(request)
+    persona = resolve_persona(request)
+    if persona is None:
+        return JSONResponse(status_code=400, content={"error": "No persona selected."})
+
+    entry = documents.get(token, session_id, persona.id)
+    if entry is None:
+        return JSONResponse(status_code=404, content={"error": "Document not found or expired."})
+
+    return Response(
+        content=entry["content"],
+        media_type=entry["content_type"],
+        headers={"Content-Disposition": f'attachment; filename="{entry["filename"]}"'},
+    )
 
 
 @app.post("/api/confirm-action")

@@ -114,15 +114,33 @@ function renderFeedback(container, traceId) {
   container.appendChild(div);
 }
 
-function renderAnswer(entry, text, traceId) {
+function renderAttachments(container, attachments) {
+  if (!attachments || !attachments.length) {
+    return;
+  }
+  const div = document.createElement("div");
+  div.className = "attachment-list";
+  for (const att of attachments) {
+    const a = document.createElement("a");
+    a.className = "attachment-link";
+    a.href = `/api/documents/${encodeURIComponent(att.download_token)}`;
+    a.download = att.filename;
+    a.textContent = `⬇ ${att.filename}`;
+    div.appendChild(a);
+  }
+  container.appendChild(div);
+}
+
+function renderAnswer(entry, text, traceId, attachments) {
   entry.innerHTML = `<strong>Assistant:</strong> <span></span>`;
   entry.querySelector("span").innerHTML = linkify(text);
+  renderAttachments(entry, attachments);
   if (traceId) {
     renderFeedback(entry, traceId);
   }
 }
 
-function renderPendingAction(entry, pendingId, description) {
+function renderPendingAction(entry, pendingId, description, attachments) {
   entry.classList.add("pending-action");
   entry.innerHTML = `
     <strong>Assistant:</strong>
@@ -133,6 +151,7 @@ function renderPendingAction(entry, pendingId, description) {
     </div>
   `;
   entry.querySelector(".pending-action-description").textContent = description;
+  renderAttachments(entry, attachments);
 
   const resolve = async (decision) => {
     entry.querySelectorAll("button").forEach((b) => (b.disabled = true));
@@ -149,9 +168,9 @@ function renderPendingAction(entry, pendingId, description) {
 
 function renderResult(entry, data) {
   if (data.type === "pending_action") {
-    renderPendingAction(entry, data.pending_id, data.description);
+    renderPendingAction(entry, data.pending_id, data.description, data.attachments);
   } else {
-    renderAnswer(entry, data.answer, data.trace_id);
+    renderAnswer(entry, data.answer, data.trace_id, data.attachments);
   }
 }
 

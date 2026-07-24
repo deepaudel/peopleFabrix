@@ -9,6 +9,7 @@ either vendor SDK directly: OpenAI (gpt-4o-mini) is the default for cost, but
 Claude is required for the HRIS-write path (see _RedirectToClaude below).
 """
 
+import base64
 import json
 import logging
 import os
@@ -18,7 +19,7 @@ from dotenv import load_dotenv
 from langfuse import get_client, observe, propagate_attributes
 from openai import AsyncOpenAI
 
-from app import history, pending_actions
+from app import documents, history, pending_actions
 from app.mcp_client import MCPClientManager
 from app.personas import Persona
 from app.providers.anthropic_provider import AnthropicAdapter
@@ -39,12 +40,14 @@ STEP_LABELS = {
     "hris_read": "Checking HR record",
     "hris_write": "Preparing HR record change",
     "warehouse_query": "Querying workforce analytics",
+    "generate_employment_letter": "Generating employment letter",
 }
 
 SYSTEM_PROMPT_TEMPLATE = """You are an internal HR and workforce assistant for the company.
 Your role is to help employees and managers understand HR policies, benefits, workplace procedures, and workforce information.
 
-You are currently talking to: {persona_name}, {persona_title} ({persona_department}), role: {persona_role}.
+You are currently talking to: {persona_name}, {persona_title} ({persona_department}), role: {persona_role},
+based in {persona_location_city}, {persona_location_country}.
 Every tool call is automatically scoped to this person's identity — you cannot look up or modify
 anyone else's data unless your tools explicitly report you're authorized to (e.g. a manager may
 access their direct reports' records; an HRBP may access anyone's).
@@ -54,6 +57,14 @@ Core Response Rules
 1. Use your tools, don't guess
    * For policy/benefits/procedure questions, call policy_search and base your answer only on
      the returned passages. Do not rely on general knowledge for company-specific policy.
+   * Some policies vary by country (e.g. public holidays, statutory leave, benefits eligibility).
+     When a policy question could vary by country, factor in this person's location
+     ({persona_location_country}) — include country context in your policy_search query (e.g.
+     "public holidays for UK team members" rather than just "public holidays"), and if the
+     retrieved passages distinguish between countries/entities, answer with the part that applies
+     to {persona_location_country} specifically rather than a generic or different country's
+     answer. If the passages don't make a country-specific distinction, say the policy appears to
+     apply company-wide rather than guessing it's location-specific.
    * For questions about the current person's own HR data (PTO balance, employment info, etc.)
      or (if authorized) someone else's, call hris_read.
    * For workforce-analytics questions (headcount, tenure, PTO usage trends), call
@@ -96,6 +107,8 @@ def build_system_prompt(persona: Persona) -> str:
         persona_title=persona.title,
         persona_department=persona.department,
         persona_role=persona.role,
+        persona_location_city=persona.location_city,
+        persona_location_country=persona.location_country,
     )
 
 
@@ -128,6 +141,29 @@ def _pending_confirmation_id(tool_name: str, result: dict) -> str | None:
     return None
 
 
+def _extract_attachment(tool_result: dict, session_id: str, persona_id: str) -> dict | None:
+    """If a tool result carries a generated file (any MCP tool can return
+    this shape, not just generate_employment_letter — this is a generic
+    mechanism for future file-returning tools), stages the decoded bytes
+    into the main-process document store and mutates tool_result IN PLACE to
+    replace the base64 blob with a lightweight download_token before it's
+    fed back to the model — keeps the (relatively large) payload out of the
+    model's context. Returns the structured attachment info for the
+    frontend, or None if this tool result carries no attachment."""
+    if not isinstance(tool_result, dict) or tool_result.get("status") != "document_ready":
+        return None
+    if "content_base64" not in tool_result:
+        return None
+
+    content = base64.b64decode(tool_result.pop("content_base64"))
+    filename = tool_result["filename"]
+    content_type = tool_result["content_type"]
+    token = documents.stage(session_id, persona_id, filename, content, content_type)
+    tool_result["download_token"] = token
+
+    return {"download_token": token, "filename": filename, "content_type": content_type}
+
+
 class _RedirectToClaude(Exception):
     """Raised mid-_run_loop when a non-Anthropic turn decides to call
     hris_write. Nothing has been dispatched or appended to `messages` yet at
@@ -152,6 +188,7 @@ async def _run_loop(
     terminal item. Raises _RedirectToClaude if a non-Anthropic adapter's
     turn wants to call hris_write — see that class's docstring."""
     tools = mcp.claude_tool_defs if adapter.provider == "anthropic" else mcp.openai_tool_defs
+    attachments: list[dict] = []
 
     for _ in range(MAX_TOOL_ITERATIONS):
         with langfuse.start_as_current_observation(
@@ -169,7 +206,7 @@ async def _run_loop(
 
         if result.stop_reason != "tool_use":
             history.append_turn(session_id, question, result.text)
-            yield _result({"type": "answer", "answer": result.text})
+            yield _result({"type": "answer", "answer": result.text, "attachments": attachments})
             return
 
         if adapter.provider != "anthropic" and any(tc.name == "hris_write" for tc in result.tool_calls):
@@ -186,6 +223,9 @@ async def _run_loop(
                 "label": STEP_LABELS.get(tc.name, f"Running {tc.name}"),
             }
             tool_result = await dispatch_tool(mcp, tc.name, tc.input, persona)
+            attachment = _extract_attachment(tool_result, session_id, persona.id)
+            if attachment:
+                attachments.append(attachment)
             tool_results.append(tool_result)
             pending_id = _pending_confirmation_id(tc.name, tool_result)
             if pending_id:
@@ -203,12 +243,19 @@ async def _run_loop(
                 model=model,
                 provider=adapter.provider,
             )
-            yield _result({"type": "pending_action", "pending_id": pending_id, "description": description})
+            yield _result(
+                {
+                    "type": "pending_action",
+                    "pending_id": pending_id,
+                    "description": description,
+                    "attachments": attachments,
+                }
+            )
             return
 
     fallback = "I wasn't able to finish that — could you rephrase or narrow the question?"
     history.append_turn(session_id, question, fallback)
-    yield _result({"type": "answer", "answer": fallback})
+    yield _result({"type": "answer", "answer": fallback, "attachments": attachments})
 
 
 @observe(name="ask")

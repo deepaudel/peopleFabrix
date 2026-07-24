@@ -113,5 +113,21 @@ def warehouse_query(
     return warehouse_data.run_query(actor_persona_id, query_name, department_filter)
 
 
+@mcp.tool()
+def generate_employment_letter(actor_persona_id: str) -> dict:
+    """Generate an employment verification letter (PDF) for the caller.
+
+    Self-service only — always generates the letter for the person asking,
+    never for anyone else; there is no target_persona_id parameter. Confirms
+    employment: role, department, location, employment type, and start date,
+    using the caller's own HR record. Returns a document-ready result — tell
+    the user their letter is ready; do not try to paste its contents inline,
+    the caller's application handles presenting it as a downloadable file.
+    """
+    from app.mcp_server import letters
+
+    return letters.build(actor_persona_id)
+
+
 if __name__ == "__main__":
     mcp.run(transport="stdio")

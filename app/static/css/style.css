@@ -352,3 +352,26 @@ button:disabled {
   border-color: var(--accent);
   background: var(--bg-page);
 }
+
+.attachment-list {
+  margin-top: 0.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.attachment-link {
+  display: inline-block;
+  align-self: flex-start;
+  padding: 0.3rem 0.7rem;
+  font-size: 0.9rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  text-decoration: none;
+}
+
+.attachment-link:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}

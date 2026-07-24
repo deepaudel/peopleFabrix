@@ -18,6 +18,9 @@ class Persona:
     role: str  # "employee" | "manager" | "hrbp"
     title: str
     department: str
+    location_city: str
+    location_country: str
+    hire_date: str  # ISO 8601 (YYYY-MM-DD)
     manager_id: str | None
     direct_report_ids: tuple[str, ...] = field(default_factory=tuple)
 
@@ -29,6 +32,9 @@ PERSONAS: dict[str, Persona] = {
         role="employee",
         title="Software Engineer",
         department="Engineering",
+        location_city="Charlotte",
+        location_country="USA",
+        hire_date="2022-03-14",  # matches hris_store's start_date for this persona
         manager_id="mgr_sam",
     ),
     "emp_alex": Persona(
@@ -36,7 +42,10 @@ PERSONAS: dict[str, Persona] = {
         display_name="Alex Rivera",
         role="employee",
         title="Product Analyst",
-        department="Product",
+        department="Engineering",
+        location_city="London",
+        location_country="UK",
+        hire_date="2023-07-01",  # matches hris_store's start_date for this persona
         manager_id="mgr_sam",
     ),
     "mgr_sam": Persona(
@@ -45,6 +54,9 @@ PERSONAS: dict[str, Persona] = {
         role="manager",
         title="Engineering Manager",
         department="Engineering",
+        location_city="Charlotte",
+        location_country="USA",
+        hire_date="2019-01-08",  # matches hris_store's start_date for this persona
         manager_id="hrbp_taylor",
         direct_report_ids=("emp_jane", "emp_alex"),
     ),
@@ -54,6 +66,9 @@ PERSONAS: dict[str, Persona] = {
         role="hrbp",
         title="HR Business Partner",
         department="People",
+        location_city="Charlotte",
+        location_country="USA",
+        hire_date="2018-05-21",  # matches hris_store's start_date for this persona
         manager_id=None,
     ),
 }
