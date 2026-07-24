@@ -132,29 +132,34 @@ function renderAttachments(container, attachments) {
 }
 
 function renderAnswer(entry, text, traceId, attachments) {
-  entry.innerHTML = `<strong>Assistant:</strong> <span></span>`;
-  entry.querySelector("span").innerHTML = linkify(text);
-  renderAttachments(entry, attachments);
+  const body = entry.querySelector(".entry-body");
+  body.innerHTML = `<span class="answer-text"></span>`;
+  body.querySelector(".answer-text").innerHTML = linkify(text);
+  renderAttachments(body, attachments);
   if (traceId) {
-    renderFeedback(entry, traceId);
+    renderFeedback(body, traceId);
   }
 }
 
 function renderPendingAction(entry, pendingId, description, attachments) {
   entry.classList.add("pending-action");
-  entry.innerHTML = `
-    <strong>Assistant:</strong>
+  const body = entry.querySelector(".entry-body");
+  body.innerHTML = `
     <p class="pending-action-description"></p>
     <div class="pending-action-buttons">
       <button type="button" class="confirm-btn">Confirm</button>
       <button type="button" class="cancel-btn">Cancel</button>
     </div>
   `;
-  entry.querySelector(".pending-action-description").textContent = description;
-  renderAttachments(entry, attachments);
+  body.querySelector(".pending-action-description").textContent = description;
+  renderAttachments(body, attachments);
 
   const resolve = async (decision) => {
     entry.querySelectorAll("button").forEach((b) => (b.disabled = true));
+    // Reseed with a fresh answer-text span so the resumed generation's
+    // steps/text render live too (into the same, already-populated
+    // .step-list), instead of only appearing once the resume finishes.
+    body.innerHTML = `<span class="answer-text">Thinking…</span>`;
     await streamRequest(
       "/api/confirm-action",
       { pending_id: pendingId, decision },
@@ -176,8 +181,13 @@ function renderResult(entry, data) {
 
 function renderError(entry, message) {
   entry.classList.add("error-text");
-  entry.innerHTML = `<strong>Assistant:</strong> <span></span>`;
-  entry.querySelector("span").textContent = message || "Something went wrong.";
+  // If this error happened mid-confirm/cancel, don't leave the entry stuck:
+  // strip the pending-action styling and re-enable any disabled buttons.
+  entry.classList.remove("pending-action");
+  entry.querySelectorAll("button").forEach((b) => (b.disabled = false));
+  const body = entry.querySelector(".entry-body");
+  body.innerHTML = `<span class="answer-text"></span>`;
+  body.querySelector(".answer-text").textContent = message || "Something went wrong.";
 }
 
 function addEntry(role, text, isError = false) {
@@ -199,7 +209,7 @@ function addStreamingEntry() {
   entry.innerHTML = `
     <strong>Assistant:</strong>
     <ul class="step-list"></ul>
-    <span class="answer-text">Thinking…</span>
+    <div class="entry-body"><span class="answer-text">Thinking…</span></div>
   `;
   transcript.appendChild(entry);
   transcript.scrollTop = transcript.scrollHeight;

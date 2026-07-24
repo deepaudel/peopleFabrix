@@ -243,6 +243,10 @@ button:disabled {
   gap: 0.3rem;
 }
 
+.step-list:empty {
+  display: none;
+}
+
 .step-list li {
   font-size: 0.85rem;
   color: var(--muted);
