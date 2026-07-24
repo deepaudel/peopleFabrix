@@ -189,6 +189,20 @@ body {
   #response-panel {
     width: 100%;
   }
+
+  /* Full-width, left-aligned rows instead of flex-wrapped pills — a pill
+     shape (border-radius: 999px) looks broken once text wraps to multiple
+     lines in a narrow column, so this switches to a card/list layout. */
+  .starters {
+    flex-direction: column;
+    flex-wrap: nowrap;
+  }
+
+  .starter-chip {
+    width: 100%;
+    text-align: left;
+    border-radius: 12px;
+  }
 }
 
 .panel h2 {

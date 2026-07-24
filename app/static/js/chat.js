@@ -60,6 +60,10 @@ if (showStepsToggle) {
 const PANEL_WIDTH_STORAGE_KEY = "pf_panel_width";
 const PANEL_WIDTH_MIN = 20;
 const PANEL_WIDTH_MAX = 70;
+// Must match style.css's "@media (max-width: 700px)" stacked-layout
+// breakpoint — below this width, panels are full-width and stacked, and
+// any inline width the splitter set previously must not fight that.
+const STACKED_LAYOUT_QUERY = window.matchMedia("(max-width: 700px)");
 const panelsContainer = document.querySelector(".panels");
 const splitter = document.getElementById("panel-splitter");
 const questionPanel = document.getElementById("question-panel");
@@ -67,18 +71,26 @@ const responsePanel = document.getElementById("response-panel");
 
 function applyPanelWidth(leftPercent) {
   const clamped = Math.min(PANEL_WIDTH_MAX, Math.max(PANEL_WIDTH_MIN, leftPercent));
+  const stacked = STACKED_LAYOUT_QUERY.matches;
+  // On the stacked mobile layout, clear any inline width so the media
+  // query's `width: 100%` rule applies — an inline style (even from a
+  // prior desktop-width session) always beats a stylesheet rule.
   if (questionPanel) {
-    questionPanel.style.width = `calc(${clamped}% - 4px)`;
+    questionPanel.style.width = stacked ? "" : `calc(${clamped}% - 4px)`;
   }
   if (responsePanel) {
-    responsePanel.style.width = `calc(${100 - clamped}% - 4px)`;
+    responsePanel.style.width = stacked ? "" : `calc(${100 - clamped}% - 4px)`;
   }
   return clamped;
 }
 
 if (splitter && panelsContainer && questionPanel && responsePanel) {
   const stored = localStorage.getItem(PANEL_WIDTH_STORAGE_KEY);
-  applyPanelWidth(stored !== null ? Number(stored) : 40);
+  const initialWidth = stored !== null ? Number(stored) : 40;
+  applyPanelWidth(initialWidth);
+  // Re-apply on breakpoint crossing (window resize, orientation change) —
+  // not just on load — so the stacked/split layout stays consistent.
+  STACKED_LAYOUT_QUERY.addEventListener("change", () => applyPanelWidth(initialWidth));
 
   let dragging = false;
 
@@ -496,6 +508,13 @@ if (form) form.addEventListener("submit", async (event) => {
   addEntry("user", question);
   input.value = "";
   const pending = addStreamingEntry();
+
+  // On the stacked mobile layout the response panel sits below the ask
+  // panel — bring it into view so the answer doesn't silently stream in
+  // off-screen, requiring a manual scroll to notice it.
+  if (STACKED_LAYOUT_QUERY.matches) {
+    document.getElementById("response-panel")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
 
   try {
     await streamRequest("/api/ask", { question }, makeStreamHandlers(pending));
